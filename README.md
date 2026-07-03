@@ -5,7 +5,7 @@
 ![Git](https://img.shields.io/badge/git-2.54.0-f05032)
 ![Benchmark](https://img.shields.io/badge/benchmark-100%20trials-blue)
 
-<a href="https://LivioGama.github.io/agent-config/redirect.html?path=.agent-config/skills/usable-git/SKILL.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git skill" height="40" /></a>
+<a href="https://LivioGama.github.io/agent-config/redirect.html?path=.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
 
 ### Git should be a repository API, not a transcript of shell commands.
 
@@ -139,9 +139,9 @@ Results:
 
 ## 🚀 Agent-First Usage
 
-Install the skill through the `agent-config` deeplink handler:
+Install the global rule through the `agent-config` deeplink handler:
 
-<a href="https://LivioGama.github.io/agent-config/redirect.html?path=.agent-config/skills/usable-git/SKILL.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git skill" height="40" /></a>
+<a href="https://LivioGama.github.io/agent-config/redirect.html?path=.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
 
 Paste this repository into an agent and ask it to use the benchmark data as the target shape for a semantic Git API:
 

@@ -5,7 +5,7 @@
 ![Git](https://img.shields.io/badge/git-2.54.0-f05032)
 ![Benchmark](https://img.shields.io/badge/benchmark-100%20trials-blue)
 
-<a href="https://LivioGama.github.io/agent-config/redirect.html?url=https%3A%2F%2Fraw.githubusercontent.com%2FLivioGama%2Fusable-git%2Fmain%2F.agent-config%2Frules%2Fusable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
+<a href="https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
 
 ### Git should be a repository API, not a transcript of shell commands.
 
@@ -141,7 +141,13 @@ Results:
 
 Install the global rule through the `agent-config` deeplink handler:
 
-<a href="https://LivioGama.github.io/agent-config/redirect.html?url=https%3A%2F%2Fraw.githubusercontent.com%2FLivioGama%2Fusable-git%2Fmain%2F.agent-config%2Frules%2Fusable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
+<a href="https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
+
+Install URL:
+
+```text
+https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md
+```
 
 Raw rule URL:
 

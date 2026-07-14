@@ -470,6 +470,30 @@ const containsCompletedCodexInspect = (output: string) => output
     }
   });
 
+const DEVIN_EXPORT_MAX_BYTES = 1_048_576;
+
+const isDevinInspectToolUse = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(isDevinInspectToolUse);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (
+    record.type === "tool_use" &&
+    typeof record.name === "string" &&
+    /^(?:mcp(?:__|[\s:/-])+)?usable-git(?:__|[\s:/-])+inspect$/i.test(record.name)
+  ) return true;
+  return Object.values(record).some(isDevinInspectToolUse);
+};
+
+const containsExportedDevinInspect = async (path: string) => {
+  try {
+    const artifact = Bun.file(path);
+    if (!(await artifact.exists()) || artifact.size > DEVIN_EXPORT_MAX_BYTES) return false;
+    return isDevinInspectToolUse(JSON.parse(await artifact.text()));
+  } catch {
+    return false;
+  }
+};
+
 export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
   client,
   executablePath,
@@ -490,6 +514,9 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     "Use the configured MCP semantic repository inspect tool exactly once on the current repository.",
     "Do not execute shell commands. Return only the operation name and success state.",
   ].join(" ");
+  const devinExportPath = client === "devin"
+    ? join(tmpdir(), `usable-git-doctor-devin-${crypto.randomUUID()}.json`)
+    : undefined;
   const args = client === "codex"
     ? [
         "exec",
@@ -510,25 +537,31 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     : client === "claude"
       ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
       : client === "devin"
-        ? ["--permission-mode", "dangerous", "-p", prompt]
+        ? ["--permission-mode", "dangerous", "--export", devinExportPath as string, "-p", prompt]
         : ["-p", "--trust", "--approve-mcps", prompt];
-  const result = await processRunner({
-    command,
-    args,
-    cwd: repoPath,
-    env: { HOME: home },
-    timeoutMs: 120_000,
-  });
-  const diagnostic = bounded(`${result.stdout}\n${result.stderr}`);
-  const output = `${result.stdout}\n${result.stderr}`;
-  const invoked = containsCompletedCodexInspect(output) ||
-    (result.exitCode === 0 && containsSemanticInspectTrace(output));
-  return {
-    available: true,
-    invoked,
-    ...(invoked ? { operation: "inspect" as const, transport: "mcp" as const } : {}),
-    diagnostic,
-  };
+  try {
+    const result = await processRunner({
+      command,
+      args,
+      cwd: repoPath,
+      env: { HOME: home },
+      timeoutMs: 120_000,
+    });
+    const diagnostic = bounded(`${result.stdout}\n${result.stderr}`);
+    const output = `${result.stdout}\n${result.stderr}`;
+    const invoked = client === "devin"
+      ? result.exitCode === 0 && await containsExportedDevinInspect(devinExportPath as string)
+      : containsCompletedCodexInspect(output) ||
+        (result.exitCode === 0 && containsSemanticInspectTrace(output));
+    return {
+      available: true,
+      invoked,
+      ...(invoked ? { operation: "inspect" as const, transport: "mcp" as const } : {}),
+      diagnostic,
+    };
+  } finally {
+    if (devinExportPath) await rm(devinExportPath, { force: true });
+  }
 };
 
 const registrationCheck = async (

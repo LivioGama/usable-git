@@ -106,12 +106,27 @@ describe("runDoctor", () => {
     const devin = requests.find(({ command, args }) => command === "devin" && !args.includes("--version"));
     expect(devin?.args).toContain("dangerous");
     expect(devin?.args).toContain("--export");
+    const exportPath = devin?.args.at((devin?.args.indexOf("--export") ?? -2) + 1);
+    expect(exportPath).toBeTruthy();
+    expect(await Bun.file(exportPath as string).exists()).toBe(false);
   });
 
   test("rejects Devin plain-text success without exported structured tool evidence", async () => {
     const requests: Array<{ command: string; args: string[] }> = [];
     const processRunner: DoctorProcessRunner = async ({ command, args }) => {
       requests.push({ command, args });
+      if (command === "devin" && !args.includes("--version")) {
+        const exportPath = args.at(args.indexOf("--export") + 1);
+        if (!exportPath) throw new Error("missing Devin export path");
+        await writeFile(exportPath, JSON.stringify({
+          type: "result",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: "mcp__usable-git__inspect succeeded" }],
+          }],
+        }));
+        return { exitCode: 0, stdout: "Operation: inspect — ✅ success\n", stderr: "" };
+      }
       return args.includes("--version")
         ? { exitCode: 0, stdout: "1.0.0\n", stderr: "" }
         : { exitCode: 0, stdout: "Operation: inspect — ✅ success\n", stderr: "" };
@@ -166,10 +181,10 @@ describe("runDoctor", () => {
   });
 
   test("isolates Codex from user MCP config and injects only usable-git", async () => {
-    const requests: Array<{ command: string; args: string[] }> = [];
+    const requests: Array<{ command: string; args: string[]; stdin?: string }> = [];
     const executablePath = "/opt/homebrew/bin/usable-git";
-    const processRunner: DoctorProcessRunner = async ({ command, args }) => {
-      requests.push({ command, args });
+    const processRunner: DoctorProcessRunner = async ({ command, args, stdin }) => {
+      requests.push({ command, args, ...(stdin === undefined ? {} : { stdin }) });
       return args.includes("--version")
         ? { exitCode: 0, stdout: "0.114.0\n", stderr: "" }
         : {
@@ -209,6 +224,12 @@ describe("runDoctor", () => {
     );
     expect(invocation?.args).toContain('mcp_servers.usable-git.args=["mcp"]');
     expect(invocation?.args.filter((arg) => arg.startsWith("mcp_servers."))).toHaveLength(2);
+    expect(invocation?.args.at(-1)).toBe("-");
+    expect(invocation?.stdin).toBe(
+      "Use the configured MCP semantic repository inspect tool exactly once on the current repository. " +
+      "Do not execute shell commands. Return only the operation name and success state.",
+    );
+    expect(invocation?.args).not.toContain(invocation?.stdin);
   });
 
 

@@ -3,6 +3,7 @@ import {
   mkdir,
   link,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -39,6 +40,9 @@ interface BeginJournalInput {
 
 interface OperationJournalOptions {
   stateRoot?: string;
+  retentionMaxAgeMs?: number;
+  retentionMaxCount?: number;
+  now?: () => Date;
 }
 
 export class IdempotencyConflictError extends Error {
@@ -63,8 +67,10 @@ const validateRequestId = (requestId: string) => {
   }
 };
 
-const journalFileName = (requestId: string) =>
-  `${createHash("sha256").update(requestId).digest("hex")}.json`;
+const hashKey = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
+
+const journalFileName = (requestId: string) => `${hashKey(requestId)}.json`;
 
 const writeDurably = async (path: string, value: JournalRecord) => {
   await mkdir(dirname(path), { recursive: true });
@@ -125,14 +131,18 @@ export const createOperationJournal = (
   options: OperationJournalOptions = {},
 ) => {
   const stateRoot = options.stateRoot ?? getStateRoot();
-  const journalPath = (requestId: string) =>
-    join(stateRoot, "journals", journalFileName(requestId));
+  const journalRoot = join(stateRoot, "journals");
+  const retentionMaxAgeMs = options.retentionMaxAgeMs ?? 30 * 24 * 60 * 60 * 1_000;
+  const retentionMaxCount = options.retentionMaxCount ?? 1_000;
+  const now = options.now ?? (() => new Date());
+  const journalPath = (repoKey: string, requestId: string) =>
+    join(journalRoot, hashKey(repoKey), journalFileName(requestId));
 
-  const read = async (requestId: string) => {
+  const read = async (repoKey: string, requestId: string) => {
     validateRequestId(requestId);
     try {
       return JSON.parse(
-        await readFile(journalPath(requestId), "utf8"),
+        await readFile(journalPath(repoKey, requestId), "utf8"),
       ) as JournalRecord;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -157,50 +167,97 @@ export const createOperationJournal = (
 
       return { kind: "resume" as const, record: existing };
     };
-    const existing = await read(input.requestId);
+    const existing = await read(input.repoKey, input.requestId);
     if (existing) return existingOutcome(existing);
 
-    const now = new Date().toISOString();
+    const timestamp = now().toISOString();
     const record: JournalRecord = {
       schemaVersion: 1,
       ...input,
       phase: "started",
-      createdAt: now,
-      updatedAt: now,
+      createdAt: timestamp,
+      updatedAt: timestamp,
     };
-    const created = await writeNewDurably(journalPath(input.requestId), record);
+    const path = journalPath(input.repoKey, input.requestId);
+    const created = await writeNewDurably(path, record);
     if (!created) {
-      const concurrent = await read(input.requestId);
+      const concurrent = await read(input.repoKey, input.requestId);
       if (!concurrent) throw new Error("Concurrent journal creation produced no readable record");
       return existingOutcome(concurrent);
     }
     return { kind: "started" as const, record };
   };
 
-  const transition = async (requestId: string, phase: JournalPhase) => {
-    const existing = await read(requestId);
+  const transition = async (
+    repoKey: string,
+    requestId: string,
+    phase: JournalPhase,
+  ) => {
+    const existing = await read(repoKey, requestId);
     if (!existing) throw new Error(`Unknown request ID: ${requestId}`);
     const next: JournalRecord = {
       ...existing,
       phase,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
     };
-    await writeDurably(journalPath(requestId), next);
+    await writeDurably(journalPath(repoKey, requestId), next);
     return next;
   };
 
-  const complete = async (requestId: string, result: unknown) => {
-    const existing = await read(requestId);
+  const complete = async (repoKey: string, requestId: string, result: unknown) => {
+    const existing = await read(repoKey, requestId);
     if (!existing) throw new Error(`Unknown request ID: ${requestId}`);
     const next: JournalRecord = {
       ...existing,
       phase: "terminal",
       result,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
     };
-    await writeDurably(journalPath(requestId), next);
+    await writeDurably(journalPath(repoKey, requestId), next);
     return next;
   };
 
-  return { begin, transition, complete, read };
+  const prune = async () => {
+    const completed: Array<{ path: string; updatedAt: number }> = [];
+    let repositories;
+    try {
+      repositories = await readdir(journalRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { deleted: 0, retainedCompleted: 0 };
+      }
+      throw error;
+    }
+
+    for (const repository of repositories) {
+      if (!repository.isDirectory()) continue;
+      const repositoryPath = join(journalRoot, repository.name);
+      for (const entry of await readdir(repositoryPath, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const path = join(repositoryPath, entry.name);
+        try {
+          const record = JSON.parse(await readFile(path, "utf8")) as JournalRecord;
+          if (record.schemaVersion !== 1 || record.phase !== "terminal") continue;
+          const updatedAt = Date.parse(record.updatedAt);
+          if (!Number.isFinite(updatedAt)) continue;
+          completed.push({ path, updatedAt });
+        } catch {
+          // Corrupt and active/ambiguous records are retained for diagnosis.
+        }
+      }
+    }
+
+    completed.sort((left, right) => right.updatedAt - left.updatedAt);
+    const cutoff = now().getTime() - retentionMaxAgeMs;
+    const deleted = completed.filter(
+      (record, index) => record.updatedAt < cutoff || index >= retentionMaxCount,
+    );
+    await Promise.all(deleted.map(({ path }) => rm(path, { force: true })));
+    return {
+      deleted: deleted.length,
+      retainedCompleted: completed.length - deleted.length,
+    };
+  };
+
+  return { begin, transition, complete, read, prune };
 };

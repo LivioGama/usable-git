@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BenchmarkClientProcessRunner } from "../../../benchmarks/clients.ts";
 import { runBenchmarkMatrix } from "../../../benchmarks/runner.ts";
 
 describe("paired benchmark harness", () => {
@@ -38,4 +39,117 @@ describe("paired benchmark harness", () => {
       }),
     ).rejects.toThrow("at least 30 trials");
   });
+
+  test("executes paired real-client sessions and records measured adoption evidence", async () => {
+    const requests: string[][] = [];
+    const processRunner: BenchmarkClientProcessRunner = async (request) => {
+      requests.push(request.args);
+      const semantic = request.args.some((argument) => argument.includes("usable-git MCP"));
+      return {
+        exitCode: 0,
+        durationMs: semantic ? 40 : 100,
+        stderr: "",
+        stdout: [
+          JSON.stringify(semantic
+            ? {
+                type: "item.completed",
+                item: {
+                  id: "semantic-call",
+                  type: "mcp_tool_call",
+                  server: "usable-git",
+                  tool: "inspect",
+                  result: { metrics: { gitSubprocessCount: 2 } },
+                },
+              }
+            : {
+                type: "item.completed",
+                item: {
+                  id: "raw-call",
+                  type: "command_execution",
+                  command: "git status --porcelain=v2 --branch",
+                },
+              }),
+          JSON.stringify({
+            type: "turn.completed",
+            usage: semantic
+              ? { input_tokens: 35, output_tokens: 5 }
+              : { input_tokens: 80, output_tokens: 20 },
+          }),
+        ].join("\n"),
+      };
+    };
+
+    const artifact = await runBenchmarkMatrix({
+      clients: ["codex"],
+      clientVersions: { codex: "test-version" },
+      scenarios: ["inspect-dirty"],
+      trials: 1,
+      seed: 12,
+      allowShortRun: true,
+      clientProcessRunner: processRunner,
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(artifact.trials.every(({ execution }) => execution === "real-client-session")).toBe(true);
+    const raw = artifact.trials.find(({ method }) => method === "raw-git")!;
+    const semantic = artifact.trials.find(({ method }) => method === "semantic")!;
+    expect(raw.gitRelatedTokens.value).toBe(100);
+    expect(raw.rawGitToolCalls).toBe(1);
+    expect(semantic.gitRelatedTokens.value).toBe(40);
+    expect(semantic.semanticAdopted).toBe(true);
+    expect(semantic.semanticToolCalls).toBe(1);
+    expect(semantic.gitSubprocesses).toBe(2);
+    expect(artifact.summary.find(({ method }) => method === "semantic")?.semanticAdoptionRate)
+      .toBe(1);
+    expect(artifact.releaseGate.reasons).not.toContain(
+      "Git-related client token measurements unavailable",
+    );
+  }, 20_000);
+
+  test("blocks release eligibility when a client omits parseable token evidence", async () => {
+    const processRunner: BenchmarkClientProcessRunner = async (request) => ({
+      exitCode: 0,
+      durationMs: 10,
+      stderr: "",
+      stdout: [
+        JSON.stringify(request.args.some((argument) => argument.includes("usable-git MCP"))
+          ? {
+              type: "item.completed",
+              item: {
+                id: "semantic-call",
+                type: "mcp_tool_call",
+                server: "usable-git",
+                tool: "inspect",
+                result: { metrics: { gitSubprocessCount: 2 } },
+              },
+            }
+          : {
+              type: "item.completed",
+              item: {
+                id: "raw-call",
+                type: "command_execution",
+                command: "git status --porcelain=v2 --branch",
+              },
+            }),
+        JSON.stringify({ type: "turn.completed" }),
+      ].join("\n"),
+    });
+    const artifact = await runBenchmarkMatrix({
+      clients: ["codex"],
+      clientVersions: { codex: "test-version" },
+      scenarios: ["inspect-dirty"],
+      trials: 1,
+      seed: 13,
+      allowShortRun: true,
+      clientProcessRunner: processRunner,
+    });
+
+    expect(artifact.releaseGate.pass).toBe(false);
+    expect(artifact.releaseGate.reasons).toContain(
+      "Git-related client token measurements unavailable",
+    );
+    expect(artifact.trials.every(({ evidenceErrors }) =>
+      evidenceErrors.includes("client JSON did not expose complete token usage")
+    )).toBe(true);
+  }, 20_000);
 });

@@ -1,5 +1,8 @@
 import { resolve } from "node:path";
+import { decodeCursor, digestValue, encodeCursor } from "../contracts/cursor.ts";
 import { reviewRequestSchema, type ReviewRequest } from "../contracts/v1.ts";
+import { UsableGitError } from "../errors.ts";
+import { fingerprintChange } from "../git/fingerprint.ts";
 import { validateLiteralFiles } from "../git/paths.ts";
 import { requireWorktreeRepository } from "../git/repository.ts";
 import { git } from "../git/runner.ts";
@@ -25,26 +28,6 @@ export type ReviewResult = {
 };
 
 type Cursor = { item: number; character: number };
-
-const encodeCursor = (cursor: Cursor) => Buffer.from(JSON.stringify(cursor)).toString("base64url");
-
-const decodeCursor = (cursor: string | undefined): Cursor => {
-  if (!cursor) return { item: 0, character: 0 };
-  try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<Cursor>;
-    if (
-      !Number.isInteger(value.item) ||
-      !Number.isInteger(value.character) ||
-      (value.item ?? -1) < 0 ||
-      (value.character ?? -1) < 0
-    ) {
-      throw new Error("invalid cursor");
-    }
-    return { item: value.item!, character: value.character! };
-  } catch {
-    throw new Error("Invalid review cursor");
-  }
-};
 
 const statistics = (patch: string) => {
   let additions = 0;
@@ -111,8 +94,13 @@ const sliceWithinBytes = (value: string, character: number, cap: number) => {
   return { value: value.slice(character, end), end, bytes };
 };
 
-const paginate = (items: ReviewItem[], cursorValue: string | undefined, byteCap: number) => {
-  const cursor = decodeCursor(cursorValue);
+const paginate = (
+  items: ReviewItem[],
+  cursor: Cursor,
+  byteCap: number,
+  requestDigest: string,
+  snapshot: string,
+) => {
   if (cursor.item > items.length || (cursor.item === items.length && cursor.character !== 0)) {
     throw new Error("Invalid review cursor");
   }
@@ -141,7 +129,16 @@ const paginate = (items: ReviewItem[], cursorValue: string | undefined, byteCap:
   return {
     items: selected,
     bytes,
-    ...(hasMore ? { nextCursor: encodeCursor({ item: itemIndex, character }) } : {}),
+    ...(hasMore
+      ? {
+          nextCursor: encodeCursor({
+            operation: "review",
+            requestDigest,
+            snapshot,
+            offset: { item: itemIndex, character },
+          }),
+        }
+      : {}),
   };
 };
 
@@ -157,10 +154,32 @@ export const review = async (input: ReviewRequest): Promise<ReviewResult> => {
   const files = request.files
     ? await validateLiteralFiles(repository.root, request.files)
     : undefined;
-  const args = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
+  const requestDigest = digestValue({
+    repoPath: repository.root,
+    files: files ?? null,
+    byteCap: request.byteCap,
+  });
+  const cursorPayload = request.cursor ? decodeCursor(request.cursor, "review") : undefined;
+  if (cursorPayload && cursorPayload.requestDigest !== requestDigest) {
+    throw new UsableGitError("INVALID_INPUT", "Cursor belongs to a different review request");
+  }
+  const args = ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"];
   if (files) args.push("--", ...files);
   const statusResult = await git.runChecked(repository.root, args);
-  const changes = parsePorcelainV2(statusResult.stdout).changes;
+  const parsed = parsePorcelainV2(statusResult.stdout);
+  const changes = parsed.changes;
+  const snapshot = digestValue({
+    branch: parsed.branch,
+    changes: await Promise.all(
+      changes.map(async (change) => ({
+        ...change,
+        fingerprint: await fingerprintChange(repository.root, change),
+      })),
+    ),
+  });
+  if (cursorPayload && cursorPayload.snapshot !== snapshot) {
+    throw new UsableGitError("STALE_STATE", "Repository changed after the review cursor was issued");
+  }
   const items: ReviewItem[] = [];
 
   for (const change of changes) {
@@ -171,5 +190,13 @@ export const review = async (input: ReviewRequest): Promise<ReviewResult> => {
     }
   }
 
-  return paginate(items, request.cursor, request.byteCap);
+  const offset = cursorPayload?.offset ?? { item: 0, character: 0 };
+  if (
+    typeof offset !== "object" ||
+    !("item" in offset) ||
+    !("character" in offset)
+  ) {
+    throw new UsableGitError("INVALID_INPUT", "Invalid review cursor offset");
+  }
+  return paginate(items, offset as Cursor, request.byteCap, requestDigest, snapshot);
 };

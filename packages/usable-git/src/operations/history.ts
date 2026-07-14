@@ -1,4 +1,6 @@
+import { decodeCursor, digestValue, encodeCursor } from "../contracts/cursor.ts";
 import { historyRequestSchema, type HistoryRequest } from "../contracts/v1.ts";
+import { UsableGitError } from "../errors.ts";
 import { requireWorktreeRepository } from "../git/repository.ts";
 import { git } from "../git/runner.ts";
 
@@ -6,28 +8,18 @@ export type HistoryCommit = {
   oid: string;
   parents: string[];
   author: { name: string; email: string };
+  committer: { name: string; email: string };
   authoredAt: string;
+  committedAt: string;
   signatureStatus: string;
   message: string;
 };
 
 export type HistoryResult = {
+  head: { kind: "unborn" } | { kind: "oid"; oid: string };
   commits: HistoryCommit[];
   bytes: number;
   nextCursor?: string;
-};
-
-const encodeCursor = (skip: number) => Buffer.from(JSON.stringify({ skip })).toString("base64url");
-
-const decodeCursor = (value: string | undefined) => {
-  if (!value) return 0;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { skip?: number };
-    if (!Number.isInteger(parsed.skip) || (parsed.skip ?? -1) < 0) throw new Error("invalid");
-    return parsed.skip!;
-  } catch {
-    throw new Error("Invalid history cursor");
-  }
 };
 
 export const parseHistory = (output: string): HistoryCommit[] => {
@@ -42,6 +34,9 @@ export const parseHistory = (output: string): HistoryCommit[] => {
     const name = fields[index++];
     const email = fields[index++];
     const authoredAt = fields[index++];
+    const committerName = fields[index++];
+    const committerEmail = fields[index++];
+    const committedAt = fields[index++];
     const signatureStatus = fields[index++];
     const message = fields[index++];
     if (
@@ -50,6 +45,9 @@ export const parseHistory = (output: string): HistoryCommit[] => {
       name === undefined ||
       email === undefined ||
       authoredAt === undefined ||
+      committerName === undefined ||
+      committerEmail === undefined ||
+      committedAt === undefined ||
       signatureStatus === undefined ||
       message === undefined
     ) {
@@ -59,7 +57,9 @@ export const parseHistory = (output: string): HistoryCommit[] => {
       oid,
       parents: parents ? parents.split(" ") : [],
       author: { name, email },
+      committer: { name: committerName, email: committerEmail },
       authoredAt,
+      committedAt,
       signatureStatus,
       message,
     });
@@ -70,17 +70,36 @@ export const parseHistory = (output: string): HistoryCommit[] => {
 export const history = async (input: HistoryRequest): Promise<HistoryResult> => {
   const request = historyRequestSchema.parse(input);
   const repository = await requireWorktreeRepository(request.repoPath);
-  const skip = decodeCursor(request.cursor);
+  const requestDigest = digestValue({
+    repoPath: repository.root,
+    ref: request.ref,
+    limit: request.limit,
+    byteCap: request.byteCap ?? null,
+  });
+  const cursor = request.cursor ? decodeCursor(request.cursor, "history") : undefined;
+  if (cursor && cursor.requestDigest !== requestDigest) {
+    throw new UsableGitError("INVALID_INPUT", "Cursor belongs to a different history request");
+  }
+  if (cursor && typeof cursor.offset !== "number") {
+    throw new UsableGitError("INVALID_INPUT", "Invalid history cursor offset");
+  }
+  const skip = typeof cursor?.offset === "number" ? cursor.offset : 0;
   const exists = await git.run(repository.root, ["rev-parse", "--verify", "--quiet", request.ref]);
-  if (exists.exitCode === 1 && request.ref === "HEAD") return { commits: [], bytes: 0 };
+  if (exists.exitCode === 1 && request.ref === "HEAD") {
+    return { head: { kind: "unborn" }, commits: [], bytes: 0 };
+  }
   if (exists.exitCode !== 0) throw new Error(exists.stderr.trim() || `Unknown revision: ${request.ref}`);
+  const snapshot = exists.stdout.trim();
+  if (cursor && cursor.snapshot !== snapshot) {
+    throw new UsableGitError("STALE_STATE", "History ref changed after the cursor was issued");
+  }
 
   const result = await git.runChecked(repository.root, [
     "log",
     `--max-count=${request.limit + 1}`,
     `--skip=${skip}`,
     "-z",
-    "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%G?%x00%B%x00",
+    "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%G?%x00%B%x00",
     "--end-of-options",
     request.ref,
   ]);
@@ -101,8 +120,18 @@ export const history = async (input: HistoryRequest): Promise<HistoryResult> => 
   }
   const hasMore = hasMoreByCount || commits.length < candidates.length;
   return {
+    head: { kind: "oid", oid: snapshot },
     commits,
     bytes,
-    ...(hasMore ? { nextCursor: encodeCursor(skip + commits.length) } : {}),
+    ...(hasMore
+      ? {
+          nextCursor: encodeCursor({
+            operation: "history",
+            requestDigest,
+            snapshot,
+            offset: skip + commits.length,
+          }),
+        }
+      : {}),
   };
 };

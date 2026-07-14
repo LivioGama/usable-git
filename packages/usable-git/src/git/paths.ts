@@ -25,6 +25,7 @@ export const validateLiteralFiles = async (
 ): Promise<string[]> => {
   const unique = [...new Set(files)];
   if (unique.length === 0) throw new Error("At least one file is required");
+  if (unique.length !== files.length) throw new Error("Duplicate file paths are unsupported");
 
   for (const file of unique) {
     if (

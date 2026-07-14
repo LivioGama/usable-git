@@ -32,5 +32,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["packages/**/*.ts", "benchmarks/**/*.ts"]
+  "include": ["packages/usable-git/**/*.ts", "benchmarks/**/*.ts"]
 }

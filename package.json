@@ -10,7 +10,7 @@
     "test": "bun test packages/*/tests",
     "test:usable-git": "bun test packages/usable-git/tests",
     "test:git-mine": "bun test packages/git-mine/tests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/git-mine/tsconfig.json"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

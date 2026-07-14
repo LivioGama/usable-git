@@ -450,6 +450,26 @@ const containsSemanticInspectTrace = (output: string) =>
   /mcp(?:__|[\s:/-])+usable-git(?:__|[\s:/-])+inspect/i.test(output) ||
   /(?:tool_name|toolName|name)[^\n]{0,80}usable-git[^\n]{0,80}inspect/i.test(output);
 
+const containsCompletedCodexInspect = (output: string) => output
+  .split(/\r?\n/)
+  .some((line) => {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      const item = event.item && typeof event.item === "object"
+        ? event.item as Record<string, unknown>
+        : undefined;
+      return event.type === "item.completed" &&
+        item?.type === "mcp_tool_call" &&
+        item.server === "usable-git" &&
+        item.tool === "inspect" &&
+        item.status === "completed" &&
+        item.result !== null &&
+        item.result !== undefined;
+    } catch {
+      return false;
+    }
+  });
+
 export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
   client,
   home,
@@ -484,7 +504,9 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     timeoutMs: 120_000,
   });
   const diagnostic = bounded(`${result.stdout}\n${result.stderr}`);
-  const invoked = result.exitCode === 0 && containsSemanticInspectTrace(`${result.stdout}\n${result.stderr}`);
+  const output = `${result.stdout}\n${result.stderr}`;
+  const invoked = containsCompletedCodexInspect(output) ||
+    (result.exitCode === 0 && containsSemanticInspectTrace(output));
   return {
     available: true,
     invoked,

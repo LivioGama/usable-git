@@ -506,6 +506,14 @@ const isDevinInspectToolUse = (value: unknown): boolean => {
   if (Array.isArray(value)) return value.some(isDevinInspectToolUse);
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
+  const argumentsRecord = record.arguments && typeof record.arguments === "object"
+    ? record.arguments as Record<string, unknown>
+    : undefined;
+  if (
+    record.function_name === "mcp_call_tool" &&
+    argumentsRecord?.server_name === "usable-git" &&
+    argumentsRecord.tool_name === "inspect"
+  ) return true;
   if (
     record.type === "tool_use" &&
     typeof record.name === "string" &&

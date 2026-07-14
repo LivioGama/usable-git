@@ -70,14 +70,17 @@ describe("runDoctor", () => {
         const exportPath = args.at(args.indexOf("--export") + 1);
         if (!exportPath) throw new Error("missing Devin export path");
         await writeFile(exportPath, JSON.stringify({
-          type: "result",
-          messages: [{
-            role: "assistant",
-            content: [{
-              type: "tool_use",
-              id: "devin-inspect-1",
-              name: "mcp__usable-git__inspect",
-              input: {},
+          schema_version: "1",
+          steps: [{
+            source: "agent",
+            tool_calls: [{
+              function_name: "mcp_call_tool",
+              tool_call_id: "devin-inspect-1",
+              arguments: {
+                server_name: "usable-git",
+                tool_name: "inspect",
+                arguments: { repoPath: "/tmp/repository" },
+              },
             }],
           }],
         }));

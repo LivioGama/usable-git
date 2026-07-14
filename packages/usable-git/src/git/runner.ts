@@ -47,10 +47,26 @@ const gitEnvironment = () => {
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_DIFF_OPTS",
+    "GIT_EXTERNAL_DIFF",
   ]) {
     delete environment[key];
+  }
+  for (const key of Object.keys(environment)) {
+    if (
+      key === "GIT_CONFIG_COUNT" ||
+      key.startsWith("GIT_CONFIG_KEY_") ||
+      key.startsWith("GIT_CONFIG_VALUE_")
+    ) {
+      delete environment[key];
+    }
   }
 
   return {

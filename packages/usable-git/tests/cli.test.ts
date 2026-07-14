@@ -95,4 +95,37 @@ describe("usable-git JSON CLI", () => {
       results: [{ client: "codex", status: "installed" }],
     });
   });
+
+  test("routes doctor --clients through end-to-end diagnostics", async () => {
+    const output: string[] = [];
+    const calls: unknown[] = [];
+    const exitCode = await runCliCommand(["doctor", "--clients", "codex,cursor"], {
+      executablePath: "/opt/homebrew/bin/usable-git",
+      writeStdout: (value) => output.push(value),
+      writeStderr: () => undefined,
+      runDoctor: async (options) => {
+        calls.push(options);
+        return {
+          version: "v1",
+          ok: true,
+          clients: ["codex", "cursor"],
+          activatedClients: ["codex", "cursor"],
+          executablePath: options.executablePath,
+          checks: [],
+          summary: { passed: 0, failed: 0, skipped: 0 },
+        };
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(calls).toEqual([{
+      clients: ["codex", "cursor"],
+      executablePath: "/opt/homebrew/bin/usable-git",
+    }]);
+    expect(JSON.parse(output.join(""))).toMatchObject({
+      version: "v1",
+      ok: true,
+      activatedClients: ["codex", "cursor"],
+    });
+  });
 });

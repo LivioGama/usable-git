@@ -548,7 +548,14 @@ export const publish = async (
     }
     throw error;
   }
-  if (journalState.kind === "replay") return replayOutcome(journalState.result);
+  if (journalState.kind === "replay") {
+    try {
+      await recoveryStore.remove(repoKey, request.requestId);
+    } catch {
+      // Terminal journal result remains authoritative; stale recovery data is harmless.
+    }
+    return replayOutcome(journalState.result);
+  }
   if (journalState.kind === "started") {
     await options.mutationProbe?.("journal:started");
   }

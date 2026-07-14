@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { Database } from "bun:sqlite";
 import { initDb, getDbPath, getFileIngestState, saveSessionEpisodes, getAllEpisodes, getEpisodeById, getStepsForEpisode, DbEpisode, DbStep } from "../src/store";
 import { streamClaudeLog } from "../src/sources/claude";
 import { streamCodexLog, findCodexFiles, getCodexFileMeta } from "../src/sources/codex";
@@ -7,6 +8,12 @@ import { findDevinSessions, streamDevinLog } from "../src/sources/devin";
 import { findOpenCodeSessions, streamOpenCodeLog } from "../src/sources/opencode";
 import { parseEpisodes, EpisodeData, EpisodeStep } from "../src/episodes";
 import { generateTrendsMarkdown } from "../src/trends";
+import {
+  ingestSemanticTelemetry,
+  migrateLegacyDatabase,
+  openRedactedDatabase,
+} from "../src/semantic/redacted-store";
+import { generateAdoptionReport } from "../src/semantic/report";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -23,8 +30,50 @@ Commands:
   trends [--tool <claude|codex|cursor|devin|opencode>]
                      Display the markdown trends table of episode shapes.
   show <episode-id>  Show detailed steps and reasoning for a specific episode.
+  semantic-migrate --source <legacy.db> --destination <redacted.db>
+                     Create a separate content-redacted database from legacy data.
+  semantic-ingest --input <telemetry.jsonl> --database <redacted.db>
+                     Ingest strict metadata-only semantic telemetry.
+  semantic-report --database <redacted.db>
+                     Output adoption, correctness, operation, token, and latency metrics as JSON.
 `);
 }
+
+const requireOption = (value: string | undefined, flag: string) => {
+  if (!value) throw new Error(`Missing required option: ${flag}`);
+  return value;
+};
+
+const handleSemanticMigrate = (options: { source?: string; destination?: string }) => {
+  const outcome = migrateLegacyDatabase({
+    sourcePath: requireOption(options.source, "--source"),
+    destinationPath: requireOption(options.destination, "--destination"),
+  });
+  console.log(JSON.stringify(outcome));
+};
+
+const handleSemanticIngest = async (options: { input?: string; database?: string }) => {
+  const databasePath = requireOption(options.database, "--database");
+  const inputPath = requireOption(options.input, "--input");
+  const database = openRedactedDatabase(databasePath);
+  try {
+    const outcome = await ingestSemanticTelemetry(database, inputPath);
+    console.log(JSON.stringify(outcome));
+  } finally {
+    database.close();
+  }
+};
+
+const handleSemanticReport = (options: { database?: string }) => {
+  const databasePath = requireOption(options.database, "--database");
+  if (!fs.existsSync(databasePath)) throw new Error(`Database does not exist: ${databasePath}`);
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    console.log(JSON.stringify(generateAdoptionReport(database)));
+  } finally {
+    database.close();
+  }
+};
 
 function findJsonlFiles(dir: string): string[] {
   const results: string[] = [];
@@ -425,7 +474,15 @@ async function main() {
   }
 
   // Parse arguments for options
-  const options: { tool?: string; since?: string; cwd?: string } = {};
+  const options: {
+    tool?: string;
+    since?: string;
+    cwd?: string;
+    source?: string;
+    destination?: string;
+    input?: string;
+    database?: string;
+  } = {};
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--tool") {
       options.tool = args[i + 1];
@@ -435,6 +492,18 @@ async function main() {
       i++;
     } else if (args[i] === "--cwd") {
       options.cwd = args[i + 1];
+      i++;
+    } else if (args[i] === "--source") {
+      options.source = args[i + 1];
+      i++;
+    } else if (args[i] === "--destination") {
+      options.destination = args[i + 1];
+      i++;
+    } else if (args[i] === "--input") {
+      options.input = args[i + 1];
+      i++;
+    } else if (args[i] === "--database") {
+      options.database = args[i + 1];
       i++;
     }
   }
@@ -452,6 +521,15 @@ async function main() {
     case "trends":
       handleTrends(options);
       break;
+    case "semantic-migrate":
+      handleSemanticMigrate(options);
+      break;
+    case "semantic-ingest":
+      await handleSemanticIngest(options);
+      break;
+    case "semantic-report":
+      handleSemanticReport(options);
+      break;
     default:
       console.error(`Unknown command: ${command}`);
       printUsage();
@@ -459,4 +537,7 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});

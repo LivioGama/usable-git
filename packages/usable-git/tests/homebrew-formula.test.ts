@@ -26,6 +26,8 @@ describe("Homebrew formula generation", () => {
     expect(first).toContain('license "MIT"');
     expect(first).toContain('depends_on "bun"');
     expect(first).toContain('depends_on "git"');
+    expect(first).toContain('system Formula["bun"].opt_bin/"bun", "install", "--production", "--frozen-lockfile"');
+    expect(first).toContain('libexec.install Dir["*"]');
     expect(first).not.toContain("{{");
     expect(first.endsWith("\n")).toBeTrue();
   });

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
+  link,
   open,
   readFile,
   rename,
@@ -90,6 +91,36 @@ const writeDurably = async (path: string, value: JournalRecord) => {
   }
 };
 
+const writeNewDurably = async (path: string, value: JournalRecord) => {
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.new`;
+  const file = await open(temporaryPath, "wx", 0o600);
+  try {
+    await file.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+
+  try {
+    try {
+      await link(temporaryPath, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+    const directory = await open(dirname(path), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+    return true;
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+};
+
 export const createOperationJournal = (
   options: OperationJournalOptions = {},
 ) => {
@@ -111,8 +142,7 @@ export const createOperationJournal = (
 
   const begin = async (input: BeginJournalInput) => {
     validateRequestId(input.requestId);
-    const existing = await read(input.requestId);
-    if (existing) {
+    const existingOutcome = (existing: JournalRecord) => {
       if (
         existing.operation !== input.operation ||
         existing.repoKey !== input.repoKey ||
@@ -126,7 +156,9 @@ export const createOperationJournal = (
       }
 
       return { kind: "resume" as const, record: existing };
-    }
+    };
+    const existing = await read(input.requestId);
+    if (existing) return existingOutcome(existing);
 
     const now = new Date().toISOString();
     const record: JournalRecord = {
@@ -136,7 +168,12 @@ export const createOperationJournal = (
       createdAt: now,
       updatedAt: now,
     };
-    await writeDurably(journalPath(input.requestId), record);
+    const created = await writeNewDurably(journalPath(input.requestId), record);
+    if (!created) {
+      const concurrent = await read(input.requestId);
+      if (!concurrent) throw new Error("Concurrent journal creation produced no readable record");
+      return existingOutcome(concurrent);
+    }
     return { kind: "started" as const, record };
   };
 

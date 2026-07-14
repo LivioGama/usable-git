@@ -158,6 +158,9 @@ const createFixture = async (scenario: BenchmarkScenario, seed: number): Promise
   const stateRoot = join(root, "state");
   await mkdir(repoPath);
   await checkedGit(repoPath, ["init", "--quiet", "--initial-branch=main"]);
+  await checkedGit(repoPath, ["config", "user.name", "Usable Git Benchmark"]);
+  await checkedGit(repoPath, ["config", "user.email", "benchmark@usable-git.invalid"]);
+  await checkedGit(repoPath, ["config", "commit.gpgsign", "false"]);
   await writeFixtureFile(repoPath, "selected.txt", `base-selected-${seed}\n`);
   await writeFixtureFile(repoPath, "unrelated.txt", `base-unrelated-${seed}\n`);
   await checkedGit(repoPath, ["add", "--", "selected.txt", "unrelated.txt"]);
@@ -263,6 +266,7 @@ const semanticInspect = async (repoPath: string): Promise<MeasuredOutcome> => {
 const rawPublish = async (repoPath: string): Promise<MeasuredOutcome> => {
   const startedAt = performance.now();
   const status = await runGit(repoPath, ["status", "--porcelain=v2", "-z", "--branch"]);
+  const diff = await runGit(repoPath, ["diff", "--", "selected.txt"]);
   const head = await runGit(repoPath, ["rev-parse", "--verify", "HEAD"]);
   const commit = await runGit(repoPath, [
     "commit",
@@ -273,11 +277,17 @@ const rawPublish = async (repoPath: string): Promise<MeasuredOutcome> => {
     "--",
     "selected.txt",
   ]);
+  const finalStatus = await runGit(repoPath, ["status", "--porcelain=v1", "-z"]);
   return {
     durationMs: performance.now() - startedAt,
-    gitSubprocesses: 3,
-    agentFacingOperations: 3,
-    success: status.exitCode === 0 && head.exitCode === 0 && commit.exitCode === 0,
+    gitSubprocesses: 5,
+    agentFacingOperations: 5,
+    success:
+      status.exitCode === 0 &&
+      diff.exitCode === 0 &&
+      head.exitCode === 0 &&
+      commit.exitCode === 0 &&
+      finalStatus.exitCode === 0,
     outcome: commit.exitCode === 0 ? "published" : `git-exit-${commit.exitCode}`,
   };
 };

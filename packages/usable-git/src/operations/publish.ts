@@ -1,0 +1,713 @@
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import {
+  publishRequestSchema,
+  type PublishRequest,
+} from "../contracts/v1/publish.ts";
+import type { ErrorCode } from "../contracts/v1.ts";
+import { validateLiteralFiles } from "../git/paths.ts";
+import { discoverRepository } from "../git/repository.ts";
+import { git, type GitRunResult, type GitRunner } from "../git/runner.ts";
+import {
+  captureIndexSnapshot,
+  indexChecksum,
+  restoreIndexIfOwned,
+  type IndexSnapshot,
+} from "../mutations/publish-index.ts";
+import {
+  createPublishRecoveryStore,
+  type PublishRecoveryState,
+} from "../mutations/publish-recovery.ts";
+import {
+  createOperationJournal,
+  IdempotencyConflictError,
+} from "../mutations/operation-journal.ts";
+import {
+  acquireRepositoryLock,
+  RepositoryBusyError,
+} from "../mutations/repository-lock.ts";
+import { inspect, type InspectResult } from "./inspect.ts";
+
+export type { PublishRequest } from "../contracts/v1/publish.ts";
+
+export type PublishResult = {
+  commitOid: string;
+  committedPaths: string[];
+  head: {
+    oid: string;
+    branch: string;
+  };
+  status: {
+    staged: string[];
+    unstaged: string[];
+    untracked: string[];
+    conflicted: string[];
+  };
+  warnings: string[];
+};
+
+export class PublishOperationError extends Error {
+  readonly code: ErrorCode;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    code: ErrorCode,
+    message: string,
+    details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "PublishOperationError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+type PublishOptions = {
+  stateRoot?: string;
+  runner?: GitRunner;
+};
+
+type SerializedOutcome =
+  | { kind: "success"; result: PublishResult }
+  | {
+      kind: "error";
+      error: { code: ErrorCode; message: string; details?: Record<string, unknown> };
+    };
+
+const digest = (value: string | Uint8Array) =>
+  createHash("sha256").update(value).digest("hex");
+
+const normalizedRequestHash = (request: PublishRequest) =>
+  digest(
+    JSON.stringify({
+      ...request,
+      expectedFingerprints: Object.fromEntries(
+        Object.entries(request.expectedFingerprints).sort(([left], [right]) =>
+          left.localeCompare(right),
+        ),
+      ),
+    }),
+  );
+
+const currentHead = async (root: string, runner: GitRunner) => {
+  const result = await runner.run(root, ["rev-parse", "--verify", "HEAD"]);
+  return result.exitCode === 0 ? result.stdout.trim() : null;
+};
+
+const pathExists = async (path: string) => {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const configEnabled = async (
+  root: string,
+  key: string,
+  runner: GitRunner,
+) => {
+  const result = await runner.run(root, ["config", "--bool", "--get", key]);
+  return result.exitCode === 0 && result.stdout.trim() === "true";
+};
+
+const assertSupportedState = async (
+  snapshot: InspectResult,
+  gitDir: string,
+  root: string,
+  runner: GitRunner,
+) => {
+  if (snapshot.branch.oid && !snapshot.branch.head) {
+    throw new PublishOperationError(
+      "UNSUPPORTED_STATE",
+      "Detached HEAD is unsupported for publish",
+    );
+  }
+  if (snapshot.conflicted.length > 0) {
+    throw new PublishOperationError(
+      "UNSUPPORTED_STATE",
+      "Unresolved conflicts are unsupported for publish",
+    );
+  }
+
+  const sequencerPaths = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "rebase-apply",
+    "rebase-merge",
+    "sequencer",
+  ];
+  if (
+    (await Promise.all(sequencerPaths.map((path) => pathExists(join(gitDir, path))))).some(
+      Boolean,
+    )
+  ) {
+    throw new PublishOperationError(
+      "UNSUPPORTED_STATE",
+      "An in-progress Git operation is unsupported for publish",
+    );
+  }
+
+  if (
+    (await configEnabled(root, "core.sparseCheckout", runner)) ||
+    (await configEnabled(root, "index.sparse", runner)) ||
+    (await configEnabled(root, "core.splitIndex", runner))
+  ) {
+    throw new PublishOperationError(
+      "UNSUPPORTED_STATE",
+      "Sparse and split indexes are unsupported for publish",
+    );
+  }
+};
+
+const assertExpectations = (
+  request: PublishRequest,
+  snapshot: InspectResult,
+) => {
+  const actualHead = snapshot.branch.oid;
+  if (
+    (request.expectedHead.kind === "unborn" && actualHead !== null) ||
+    (request.expectedHead.kind === "oid" && request.expectedHead.oid !== actualHead)
+  ) {
+    throw new PublishOperationError("STALE_STATE", "HEAD changed since inspection", {
+      expectedHead: request.expectedHead,
+      actualHead,
+    });
+  }
+
+  const changes = new Map(snapshot.changes.map((change) => [change.path, change]));
+  if (changes.size === 0) {
+    throw new PublishOperationError(
+      "NOTHING_TO_COMMIT",
+      "Selected paths contain no committable changes",
+    );
+  }
+
+  for (const file of request.files) {
+    const change = changes.get(file);
+    if (!change) {
+      throw new PublishOperationError(
+        "NOTHING_TO_COMMIT",
+        `Selected path contains no committable change: ${JSON.stringify(file)}`,
+      );
+    }
+    if (change.fingerprint !== request.expectedFingerprints[file]) {
+      throw new PublishOperationError(
+        "STALE_STATE",
+        `Selected path changed since inspection: ${JSON.stringify(file)}`,
+      );
+    }
+  }
+};
+
+const serializeSnapshot = (
+  snapshot: IndexSnapshot,
+): PublishRecoveryState["index"] =>
+  snapshot.exists
+    ? {
+        exists: true,
+        checksum: snapshot.checksum,
+        bytesBase64: Buffer.from(snapshot.bytes).toString("base64"),
+        mode: snapshot.mode,
+      }
+    : snapshot;
+
+const deserializeSnapshot = (
+  snapshot: PublishRecoveryState["index"],
+): IndexSnapshot =>
+  snapshot.exists
+    ? {
+        exists: true,
+        checksum: snapshot.checksum,
+        bytes: new Uint8Array(Buffer.from(snapshot.bytesBase64, "base64")),
+        mode: snapshot.mode,
+      }
+    : snapshot;
+
+const pathspecInput = (files: string[]) =>
+  new TextEncoder().encode(`${files.join("\0")}\0`);
+
+const hasActiveCommitHook = async (root: string, runner: GitRunner) => {
+  for (const name of ["pre-commit", "prepare-commit-msg", "commit-msg"]) {
+    const result = await runner.run(root, [
+      "rev-parse",
+      "--git-path",
+      `hooks/${name}`,
+    ]);
+    if (result.exitCode !== 0) continue;
+    try {
+      await access(resolve(root, result.stdout.trim()), constants.X_OK);
+      return true;
+    } catch {
+      // Missing or non-executable hooks are not active.
+    }
+  }
+  return false;
+};
+
+const classifyCommitFailure = (
+  result: GitRunResult,
+  activeCommitHook: boolean,
+) => {
+  const diagnostic = `${result.stderr}\n${result.stdout}`.trim().slice(0, 4_096);
+  if (/author identity unknown|unable to auto-detect email address/i.test(diagnostic)) {
+    return new PublishOperationError("IDENTITY_MISSING", "Git author identity is missing", {
+      exitCode: result.exitCode,
+      diagnostic,
+    });
+  }
+  if (/gpg failed to sign|failed to sign the data|signing failed/i.test(diagnostic)) {
+    return new PublishOperationError("SIGNING_FAILED", "Git commit signing failed", {
+      exitCode: result.exitCode,
+      diagnostic,
+    });
+  }
+  if (activeCommitHook || /hook|pre-commit|commit-msg/i.test(diagnostic)) {
+    return new PublishOperationError("HOOK_FAILED", "A Git commit hook rejected publish", {
+      exitCode: result.exitCode,
+      diagnostic,
+    });
+  }
+  if (/nothing to commit|no changes added to commit/i.test(diagnostic)) {
+    return new PublishOperationError(
+      "NOTHING_TO_COMMIT",
+      "Selected paths contain no committable changes",
+      { exitCode: result.exitCode, diagnostic },
+    );
+  }
+  return new PublishOperationError("GIT_FAILED", "Git commit failed", {
+    exitCode: result.exitCode,
+    diagnostic,
+  });
+};
+
+const terminalError = async (
+  journal: ReturnType<typeof createOperationJournal>,
+  requestId: string,
+  error: PublishOperationError,
+) => {
+  const outcome: SerializedOutcome = {
+    kind: "error",
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    },
+  };
+  await journal.complete(requestId, outcome);
+  return error;
+};
+
+const replayOutcome = (value: unknown): PublishResult => {
+  const outcome = value as SerializedOutcome;
+  if (outcome?.kind === "success") return outcome.result;
+  if (outcome?.kind === "error") {
+    throw new PublishOperationError(
+      outcome.error.code,
+      outcome.error.message,
+      outcome.error.details,
+    );
+  }
+  throw new PublishOperationError(
+    "RECOVERY_CONFLICT",
+    "Stored publish outcome is unreadable",
+  );
+};
+
+const changedPaths = async (
+  root: string,
+  commitOid: string,
+  runner: GitRunner,
+) => {
+  const result = await runner.runChecked(root, [
+    "diff-tree",
+    "--root",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    "-z",
+    commitOid,
+  ]);
+  return result.stdout.split("\0").filter(Boolean).sort();
+};
+
+const statusForResult = (snapshot: InspectResult) => ({
+  staged: snapshot.staged,
+  unstaged: snapshot.unstaged,
+  untracked: snapshot.untracked,
+  conflicted: snapshot.conflicted,
+});
+
+const unrelatedFingerprints = (snapshot: InspectResult, files: Set<string>) =>
+  new Map(
+    snapshot.changes
+      .filter(({ path }) => !files.has(path))
+      .map(({ path, fingerprint }) => [path, fingerprint]),
+  );
+
+const finishObservedCommit = async (
+  request: PublishRequest,
+  commitOid: string,
+  before: InspectResult | null,
+  runner: GitRunner,
+  warnings: string[] = [],
+): Promise<PublishResult> => {
+  const expected = [...request.files].sort();
+  try {
+    const committed = await changedPaths(request.repoPath, commitOid, runner);
+    if (JSON.stringify(committed) !== JSON.stringify(expected)) {
+      warnings.push(
+        `Observed commit path verification failed: expected ${JSON.stringify(expected)}, observed ${JSON.stringify(committed)}`,
+      );
+    }
+  } catch (error) {
+    warnings.push(
+      `Observed commit could not be fully verified: ${error instanceof Error ? error.message : String(error)}`.slice(
+        0,
+        4_096,
+      ),
+    );
+  }
+
+  let after: InspectResult | null = null;
+  try {
+    after = await inspect({ repoPath: request.repoPath });
+    const selected = new Set(request.files);
+    if (before) {
+      const beforeUnrelated = unrelatedFingerprints(before, selected);
+      const afterUnrelated = unrelatedFingerprints(after, selected);
+      if (
+        JSON.stringify([...beforeUnrelated]) !== JSON.stringify([...afterUnrelated])
+      ) {
+        warnings.push("Unrelated repository status changed while the commit was running");
+      }
+    }
+
+    if (!after.branch.head || after.branch.oid !== commitOid) {
+      warnings.push("HEAD moved again after the publish commit was observed");
+    }
+  } catch (error) {
+    warnings.push(
+      `Resulting repository status could not be inspected: ${error instanceof Error ? error.message : String(error)}`.slice(
+        0,
+        4_096,
+      ),
+    );
+  }
+
+  return {
+    commitOid,
+    committedPaths: [...request.files],
+    head: {
+      oid: commitOid,
+      branch: after?.branch.head ?? before?.branch.head ?? "(unknown)",
+    },
+    status: after
+      ? statusForResult(after)
+      : { staged: [], unstaged: [], untracked: [], conflicted: [] },
+    warnings,
+  };
+};
+
+const recoverInterruptedPublish = async (
+  request: PublishRequest,
+  recovery: PublishRecoveryState | null,
+  root: string,
+  indexPath: string,
+  runner: GitRunner,
+) => {
+  if (!recovery) {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "Publish journal is active but recovery metadata is missing",
+    );
+  }
+
+  const head = await currentHead(root, runner);
+  if (head !== recovery.preHead && head !== null) {
+    const result = await finishObservedCommit(request, head, null, runner, [
+      "Recovered a commit observed after an interrupted publish",
+    ]);
+    return { kind: "success" as const, result };
+  }
+
+  const restored = await restoreIndexIfOwned(
+    indexPath,
+    deserializeSnapshot(recovery.index),
+    recovery.ownedIndexChecksum,
+  );
+  if (!restored) {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "Index changed after an interrupted publish; recovery refused to overwrite it",
+    );
+  }
+
+  throw new PublishOperationError(
+    "GIT_FAILED",
+    "Interrupted publish was safely rolled back before a commit was observed",
+  );
+};
+
+export const publish = async (
+  input: PublishRequest,
+  options: PublishOptions = {},
+): Promise<PublishResult> => {
+  const parsed = publishRequestSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new PublishOperationError("INVALID_INPUT", "Invalid publish request", {
+      issues: parsed.error.issues.map(({ path, message }) => ({ path, message })),
+    });
+  }
+  const request = parsed.data;
+  const runner = options.runner ?? git;
+  let repository;
+  try {
+    repository = await discoverRepository(request.repoPath, runner);
+  } catch (error) {
+    throw new PublishOperationError(
+      "INVALID_REPOSITORY",
+      error instanceof Error ? error.message : "Invalid repository",
+    );
+  }
+  if (repository.isBare) {
+    throw new PublishOperationError(
+      "UNSUPPORTED_STATE",
+      "Bare repositories are unsupported for publish",
+    );
+  }
+
+  const repoKey = digest(repository.commonDir);
+  const inputHash = normalizedRequestHash(request);
+  const journal = createOperationJournal({ stateRoot: options.stateRoot });
+  const recoveryStore = createPublishRecoveryStore({ stateRoot: options.stateRoot });
+  let journalState;
+  try {
+    journalState = await journal.begin({
+      requestId: request.requestId,
+      operation: "publish",
+      repoKey,
+      inputHash,
+    });
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      throw new PublishOperationError("RECOVERY_CONFLICT", error.message);
+    }
+    throw error;
+  }
+  if (journalState.kind === "replay") return replayOutcome(journalState.result);
+
+  let lock;
+  try {
+    lock = await acquireRepositoryLock(repository.commonDir, {
+      stateRoot: options.stateRoot,
+    });
+  } catch (error) {
+    if (error instanceof RepositoryBusyError) {
+      const publishError = new PublishOperationError("BUSY_REPOSITORY", error.message);
+      throw await terminalError(journal, request.requestId, publishError);
+    }
+    throw error;
+  }
+
+  const indexPath = join(repository.gitDir, "index");
+  try {
+    if (journalState.kind === "resume") {
+      try {
+        const recovered = await recoverInterruptedPublish(
+          request,
+          await recoveryStore.read(request.requestId),
+          repository.root,
+          indexPath,
+          runner,
+        );
+        const outcome: SerializedOutcome = recovered;
+        await journal.complete(request.requestId, outcome);
+        await recoveryStore.remove(request.requestId);
+        return recovered.result;
+      } catch (error) {
+        const publishError =
+          error instanceof PublishOperationError
+            ? error
+            : new PublishOperationError("RECOVERY_CONFLICT", String(error));
+        throw await terminalError(journal, request.requestId, publishError);
+      }
+    }
+
+    let files;
+    try {
+      files = await validateLiteralFiles(repository.root, request.files, runner);
+    } catch (error) {
+      const publishError = new PublishOperationError(
+        "INVALID_PATH",
+        error instanceof Error ? error.message : "Invalid publish path",
+      );
+      throw await terminalError(journal, request.requestId, publishError);
+    }
+
+    let before: InspectResult;
+    let selectedBefore: InspectResult;
+    try {
+      [before, selectedBefore] = await Promise.all([
+        inspect({ repoPath: repository.root }),
+        inspect({ repoPath: repository.root, files }),
+      ]);
+      await assertSupportedState(before, repository.gitDir, repository.root, runner);
+      assertExpectations(request, selectedBefore);
+    } catch (error) {
+      const publishError =
+        error instanceof PublishOperationError
+          ? error
+          : new PublishOperationError("INVALID_PATH", String(error));
+      throw await terminalError(journal, request.requestId, publishError);
+    }
+
+    const snapshot = await captureIndexSnapshot(indexPath);
+    const activeCommitHook = await hasActiveCommitHook(repository.root, runner);
+    let recovery: PublishRecoveryState = {
+      schemaVersion: 1,
+      requestId: request.requestId,
+      repoKey,
+      inputHash,
+      phase: "snapshotted",
+      preHead: before.branch.oid,
+      files,
+      index: serializeSnapshot(snapshot),
+      ownedIndexChecksum: snapshot.checksum,
+    };
+    await recoveryStore.write(recovery);
+
+    const untracked = selectedBefore.changes
+      .filter(({ path, kind }) => files.includes(path) && kind === "untracked")
+      .map(({ path }) => path);
+    if (untracked.length > 0) {
+      const staged = await runner.run(repository.root, [
+        "--literal-pathspecs",
+        "add",
+        "--intent-to-add",
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+      ], pathspecInput(untracked));
+      if (staged.exitCode !== 0) {
+        const ownedIndexChecksum = await indexChecksum(indexPath);
+        recovery = {
+          ...recovery,
+          phase: "index_staged",
+          ownedIndexChecksum,
+        };
+        await recoveryStore.write(recovery);
+        const restored = await restoreIndexIfOwned(
+          indexPath,
+          snapshot,
+          ownedIndexChecksum,
+        );
+        if (!restored) {
+          const error = new PublishOperationError(
+            "RECOVERY_CONFLICT",
+            "Index changed after intent-to-add failed; recovery refused to overwrite it",
+          );
+          throw await terminalError(journal, request.requestId, error);
+        }
+        await recoveryStore.remove(request.requestId);
+        const error = new PublishOperationError("GIT_FAILED", "Git intent-to-add failed", {
+          exitCode: staged.exitCode,
+          diagnostic: staged.stderr.slice(0, 4_096),
+        });
+        throw await terminalError(journal, request.requestId, error);
+      }
+    }
+
+    recovery = {
+      ...recovery,
+      phase: "index_staged",
+      ownedIndexChecksum: await indexChecksum(indexPath),
+    };
+    await recoveryStore.write(recovery);
+    await journal.transition(request.requestId, "index_staged");
+    recovery = { ...recovery, phase: "commit_started" };
+    await recoveryStore.write(recovery);
+
+    const commit = await runner.run(repository.root, [
+      "--literal-pathspecs",
+      "commit",
+      "--only",
+      "--no-status",
+      "-m",
+      request.message,
+      "--pathspec-from-file=-",
+      "--pathspec-file-nul",
+    ], pathspecInput(files));
+    const observedHead = await currentHead(repository.root, runner);
+
+    if (observedHead !== before.branch.oid && observedHead !== null) {
+      const observedWarnings =
+        commit.exitCode === 0
+          ? []
+          : [`Git exited ${commit.exitCode}, but commit ${observedHead} was observed`];
+      try {
+        await journal.transition(request.requestId, "commit_observed");
+      } catch (error) {
+        observedWarnings.push(
+          `Commit was observed but journal transition failed: ${error instanceof Error ? error.message : String(error)}`.slice(
+            0,
+            4_096,
+          ),
+        );
+      }
+      const result = await finishObservedCommit(
+        request,
+        observedHead,
+        before,
+        runner,
+        observedWarnings,
+      );
+      const outcome: SerializedOutcome = { kind: "success", result };
+      try {
+        await journal.complete(request.requestId, outcome);
+      } catch (error) {
+        result.warnings.push(
+          `Commit was observed but terminal journal write failed: ${error instanceof Error ? error.message : String(error)}`.slice(
+            0,
+            4_096,
+          ),
+        );
+      }
+      try {
+        await recoveryStore.remove(request.requestId);
+      } catch (error) {
+        result.warnings.push(
+          `Commit was observed but recovery cleanup failed: ${error instanceof Error ? error.message : String(error)}`.slice(
+            0,
+            4_096,
+          ),
+        );
+      }
+      return result;
+    }
+
+    const restored = await restoreIndexIfOwned(
+      indexPath,
+      snapshot,
+      recovery.ownedIndexChecksum,
+    );
+    if (!restored) {
+      const error = new PublishOperationError(
+        "RECOVERY_CONFLICT",
+        "Index changed during failed publish; recovery refused to overwrite it",
+      );
+      throw await terminalError(journal, request.requestId, error);
+    }
+    await recoveryStore.remove(request.requestId);
+    throw await terminalError(
+      journal,
+      request.requestId,
+      classifyCommitFailure(commit, activeCommitHook),
+    );
+  } finally {
+    await lock.release();
+  }
+};

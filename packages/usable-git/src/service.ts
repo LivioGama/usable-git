@@ -87,18 +87,32 @@ const repositoryState = (input: unknown, result?: unknown) => {
   const branch = value?.branch && typeof value.branch === "object"
     ? value.branch as Record<string, unknown>
     : undefined;
-  const head = value?.head && typeof value.head === "object"
-    ? value.head
-    : branch?.oid && typeof branch.oid === "string"
+  const rawHead = value?.head && typeof value.head === "object"
+    ? value.head as Record<string, unknown>
+    : undefined;
+  const inputValue = input && typeof input === "object" ? input as Record<string, unknown> : undefined;
+  const head = rawHead?.kind === "unborn"
+    ? { kind: "unborn" }
+    : rawHead?.kind === "oid" && typeof rawHead.oid === "string"
+      ? { kind: "oid", oid: rawHead.oid }
+      : typeof rawHead?.oid === "string"
+        ? { kind: "oid", oid: rawHead.oid }
+        : branch?.oid && typeof branch.oid === "string"
       ? { kind: "oid", oid: branch.oid }
       : branch?.oid === null
         ? { kind: "unborn" }
+        : typeof inputValue?.expectedSourceOid === "string"
+          ? { kind: "oid", oid: inputValue.expectedSourceOid }
         : { kind: "unknown" };
   return {
     requestedPath: requested,
-    root: typeof repository?.root === "string" ? repository.root : null,
+    root: typeof repository?.root === "string" ? repository.root : value ? requested : null,
     head,
-    branch: typeof branch?.head === "string" ? branch.head : null,
+    branch: typeof branch?.head === "string"
+      ? branch.head
+      : typeof rawHead?.branch === "string"
+        ? rawHead.branch
+        : null,
   };
 };
 

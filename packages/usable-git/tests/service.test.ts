@@ -127,7 +127,7 @@ describe("semantic operation service", () => {
       repoPath: repo.path,
       files: ["selected.txt"],
       message: "publish through service",
-      requestId: "service-publish",
+      requestId: `service-publish-${crypto.randomUUID()}`,
       expectedHead: { kind: "unborn" },
       expectedFingerprints: { "selected.txt": fingerprint },
     }, { transport: "cli" });

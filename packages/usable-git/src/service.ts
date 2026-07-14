@@ -6,7 +6,11 @@ import {
   type V1Envelope,
 } from "./contracts/v1.ts";
 import { UsableGitError } from "./errors.ts";
-import { GitCommandError, withGitMetrics } from "./git/runner.ts";
+import {
+  GitCommandError,
+  gitSubprocessCountForError,
+  withGitMetrics,
+} from "./git/runner.ts";
 import { history } from "./operations/history.ts";
 import { inspect } from "./operations/inspect.ts";
 import { review } from "./operations/review.ts";
@@ -200,7 +204,7 @@ export const executeOperation = async (
       backend: "git-cli",
       transport: options.transport,
       durationMs: performance.now() - startedAt,
-      gitSubprocessCount: 0,
+      gitSubprocessCount: gitSubprocessCountForError(error),
       warnings: [],
       error: classifyError(error),
     });

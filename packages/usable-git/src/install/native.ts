@@ -73,8 +73,10 @@ const decodeOutput = async (stream: ReadableStream<Uint8Array> | null) =>
   stream ? new TextDecoder().decode(await new Response(stream).arrayBuffer()) : "";
 
 export const createInstallRunner = (): InstallRunner => async ({ command, args, env }) => {
+  const environment = { ...process.env, ...env };
+  delete environment.ANTHROPIC_API_KEY;
   const child = Bun.spawn([command, ...args], {
-    env: { ...process.env, ...env },
+    env: environment,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

@@ -192,12 +192,14 @@ export const createOperationJournal = (
     repoKey: string,
     requestId: string,
     phase: JournalPhase,
+    recoveryMetadata?: unknown,
   ) => {
     const existing = await read(repoKey, requestId);
     if (!existing) throw new Error(`Unknown request ID: ${requestId}`);
     const next: JournalRecord = {
       ...existing,
       phase,
+      ...(recoveryMetadata === undefined ? {} : { result: recoveryMetadata }),
       updatedAt: now().toISOString(),
     };
     await writeDurably(journalPath(repoKey, requestId), next);

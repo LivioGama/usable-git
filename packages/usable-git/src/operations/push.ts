@@ -22,6 +22,24 @@ import {
 type PushOptions = {
   runner?: GitRunner;
   stateRoot?: string;
+  mutationProbe?: (phase: PushMutationPhase) => void | Promise<void>;
+};
+
+type PushMutationPhase =
+  | "journal:started"
+  | "journal:push_started"
+  | "remote:returned"
+  | "journal:terminal";
+
+type PushStartedRecovery = {
+  schemaVersion: 1;
+  kind: "push_started";
+  remote: string;
+  sourceRef: string;
+  targetRef: string;
+  sourceOid: string;
+  oldTargetOid: string | null;
+  recoveryHash: string;
 };
 
 type StoredPushOutcome =
@@ -247,6 +265,53 @@ const replayOutcome = (value: unknown) => {
   throw new UsableGitError("RECOVERY_CONFLICT", "Stored push outcome is invalid");
 };
 
+const pushStartedRecovery = (
+  request: PushRequest,
+  sourceOid: string,
+  oldTargetOid: string | null,
+): PushStartedRecovery => {
+  const payload = {
+    schemaVersion: 1 as const,
+    kind: "push_started" as const,
+    remote: request.remote,
+    sourceRef: request.sourceRef,
+    targetRef: request.targetRef,
+    sourceOid,
+    oldTargetOid,
+  };
+  return { ...payload, recoveryHash: hashJson(payload) };
+};
+
+const parsePushStartedRecovery = (
+  value: unknown,
+  request: PushRequest,
+): PushStartedRecovery => {
+  const recovery = value as Partial<PushStartedRecovery> | undefined;
+  if (
+    !recovery ||
+    recovery.schemaVersion !== 1 ||
+    recovery.kind !== "push_started" ||
+    recovery.remote !== request.remote ||
+    recovery.sourceRef !== request.sourceRef ||
+    recovery.targetRef !== request.targetRef ||
+    recovery.sourceOid !== request.expectedSourceOid ||
+    !recovery.recoveryHash
+  ) {
+    throw new UsableGitError(
+      "RECOVERY_CONFLICT",
+      "Stored push recovery metadata is invalid",
+    );
+  }
+  const { recoveryHash, ...payload } = recovery;
+  if (hashJson(payload) !== recoveryHash) {
+    throw new UsableGitError(
+      "RECOVERY_CONFLICT",
+      "Stored push recovery metadata checksum mismatch",
+    );
+  }
+  return recovery as PushStartedRecovery;
+};
+
 export const push = async (
   input: PushRequest,
   options: PushOptions = {},
@@ -308,10 +373,60 @@ export const push = async (
     }
 
     if (journalStart.kind === "replay") return replayOutcome(journalStart.result);
-    if (journalStart.kind === "resume") {
+    if (journalStart.kind === "started") {
+      await options.mutationProbe?.("journal:started");
+    }
+    if (
+      journalStart.kind === "resume" &&
+      journalStart.record.phase === "push_started"
+    ) {
+      const recovery = parsePushStartedRecovery(journalStart.record.result, request);
+      const sourceOid = await resolveSource(
+        repository.root,
+        request.sourceRef,
+        runner,
+      );
+      if (sourceOid !== recovery.sourceOid) {
+        throw new UsableGitError(
+          "STALE_STATE",
+          "Source ref changed during interrupted push recovery",
+        );
+      }
+      const remote = await queryRemoteTarget(
+        repository.root,
+        recovery.remote,
+        recovery.targetRef,
+        runner,
+      );
+      if (remote.kind === "known" && remote.oid === recovery.sourceOid) {
+        const result = pushResultSchema.parse({
+          remote: recovery.remote,
+          sourceRef: recovery.sourceRef,
+          targetRef: recovery.targetRef,
+          oldTargetOid: recovery.oldTargetOid,
+          newTargetOid: recovery.sourceOid,
+          mode: request.mode.kind,
+          confirmedAfterFailure: true,
+        });
+        await journal.complete(repoKey, request.requestId, storedSuccess(result));
+        return result;
+      }
       throw new UsableGitError(
         "NETWORK_AMBIGUITY",
-        "Prior push with this requestId has no terminal outcome; refusing to retry",
+        "Interrupted push did not produce the exact expected remote target; refusing to retry",
+        {
+          expectedTargetOid: recovery.sourceOid,
+          actualTargetOid: remote.kind === "known" ? remote.oid : null,
+        },
+      );
+    }
+    if (
+      journalStart.kind === "resume" &&
+      journalStart.record.phase !== "started"
+    ) {
+      throw new UsableGitError(
+        "NETWORK_AMBIGUITY",
+        "Prior push with this requestId has an unknown nonterminal phase; refusing to retry",
       );
     }
 
@@ -380,8 +495,15 @@ export const push = async (
       request.remote,
       refspec,
     ];
-    await journal.transition(repoKey, request.requestId, "push_started");
+    await journal.transition(
+      repoKey,
+      request.requestId,
+      "push_started",
+      pushStartedRecovery(request, sourceOid, before.oid),
+    );
+    await options.mutationProbe?.("journal:push_started");
     const pushed = await runner.run(repository.root, arguments_);
+    await options.mutationProbe?.("remote:returned");
 
     if (pushed.exitCode === 0) {
       const result = pushResultSchema.parse({
@@ -394,6 +516,7 @@ export const push = async (
         confirmedAfterFailure: false,
       });
       await journal.complete(repoKey, request.requestId, storedSuccess(result));
+      await options.mutationProbe?.("journal:terminal");
       return result;
     }
 

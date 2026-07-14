@@ -70,4 +70,17 @@ describe("semantic operation service", () => {
     expect(mcp.result).toEqual(cli.result);
     expect(mcp.repository).toEqual(cli.repository);
   });
+
+  test("preserves typed mutation error codes in the shared envelope", async () => {
+    const envelope = await executeOperation(
+      "publish",
+      { repoPath: "/tmp/missing-required-publish-fields" },
+      { transport: "cli" },
+    );
+    expect(envelope).toMatchObject({
+      ok: false,
+      operation: "publish",
+      error: { code: "INVALID_INPUT" },
+    });
+  });
 });

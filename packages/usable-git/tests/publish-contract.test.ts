@@ -49,4 +49,17 @@ describe("publish contract", () => {
       expect(() => publishRequestSchema.parse(value)).toThrow();
     }
   });
+
+  test("validates nonblank commit messages without rewriting them", () => {
+    const request = publishRequestSchema.parse({
+      repoPath: "/tmp/repository",
+      files: ["file.txt"],
+      message: "  subject with intentional spacing  ",
+      requestId: "request-message",
+      expectedHead: { kind: "unborn" },
+      expectedFingerprints: { "file.txt": "a".repeat(64) },
+    });
+    expect(request.message).toBe("  subject with intentional spacing  ");
+    expect(() => publishRequestSchema.parse({ ...request, message: "   \n" })).toThrow();
+  });
 });

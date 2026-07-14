@@ -532,7 +532,7 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
         "--skip-git-repo-check",
         "-C",
         repoPath,
-        prompt,
+        "-",
       ]
     : client === "claude"
       ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
@@ -545,6 +545,7 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
       args,
       cwd: repoPath,
       env: { HOME: home },
+      ...(client === "codex" ? { stdin: prompt } : {}),
       timeoutMs: 120_000,
     });
     const diagnostic = bounded(`${result.stdout}\n${result.stderr}`);

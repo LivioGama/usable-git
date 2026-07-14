@@ -323,7 +323,7 @@ export const push = async (
         expectedSourceOid: request.expectedSourceOid,
         actualSourceOid: sourceOid,
       });
-      await journal.complete(request.requestId, storedError(error));
+      await journal.complete(repoKey, request.requestId, storedError(error));
       throw error;
     }
 
@@ -335,7 +335,7 @@ export const push = async (
     );
     if (before.kind === "failed") {
       const error = classifyPushFailure(before.result, false);
-      await journal.complete(request.requestId, storedError(error));
+      await journal.complete(repoKey, request.requestId, storedError(error));
       throw error;
     }
     if (
@@ -346,7 +346,7 @@ export const push = async (
         expectedTargetOid: request.mode.expectedTargetOid,
         actualTargetOid: before.oid,
       });
-      await journal.complete(request.requestId, storedError(error));
+      await journal.complete(repoKey, request.requestId, storedError(error));
       throw error;
     }
 
@@ -364,7 +364,7 @@ export const push = async (
           actualSourceOid: sourceOidImmediatelyBeforePush,
         },
       );
-      await journal.complete(request.requestId, storedError(error));
+      await journal.complete(repoKey, request.requestId, storedError(error));
       throw error;
     }
 
@@ -380,7 +380,7 @@ export const push = async (
       request.remote,
       refspec,
     ];
-    await journal.transition(request.requestId, "push_started");
+    await journal.transition(repoKey, request.requestId, "push_started");
     const pushed = await runner.run(repository.root, arguments_);
 
     if (pushed.exitCode === 0) {
@@ -393,7 +393,7 @@ export const push = async (
         mode: request.mode.kind,
         confirmedAfterFailure: false,
       });
-      await journal.complete(request.requestId, storedSuccess(result));
+      await journal.complete(repoKey, request.requestId, storedSuccess(result));
       return result;
     }
 
@@ -402,7 +402,7 @@ export const push = async (
       request.mode.kind === "force-with-lease",
     );
     if (!failureCouldBeAmbiguous(pushed)) {
-      await journal.complete(request.requestId, storedError(classified));
+      await journal.complete(repoKey, request.requestId, storedError(classified));
       throw classified;
     }
 
@@ -422,11 +422,11 @@ export const push = async (
         mode: request.mode.kind,
         confirmedAfterFailure: true,
       });
-      await journal.complete(request.requestId, storedSuccess(result));
+      await journal.complete(repoKey, request.requestId, storedSuccess(result));
       return result;
     }
     if (after.kind === "known" && after.oid === before.oid) {
-      await journal.complete(request.requestId, storedError(classified));
+    await journal.complete(repoKey, request.requestId, storedError(classified));
       throw classified;
     }
     throw new UsableGitError(

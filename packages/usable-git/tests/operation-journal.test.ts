@@ -135,10 +135,10 @@ describe("operation journal", () => {
       });
       now += 750;
 
+      expect(await journal.read("repo-a", "old-terminal")).toBeNull();
       const result = await journal.prune();
 
-      expect(result).toEqual({ deleted: 1, retainedCompleted: 1 });
-      expect(await journal.read("repo-a", "old-terminal")).toBeNull();
+      expect(result).toEqual({ deleted: 0, retainedCompleted: 1 });
       expect(await journal.read("repo-a", "new-terminal")).not.toBeNull();
       expect(await journal.read("repo-a", "active")).toMatchObject({ phase: "started" });
     });

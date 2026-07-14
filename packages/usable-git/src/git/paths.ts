@@ -15,6 +15,22 @@ const trackedModes = async (root: string, files: string[], runner: GitRunner) =>
     const match = /^(\d+) [a-f0-9]+ \d+\t([\s\S]+)$/.exec(record);
     if (match?.[1] && match[2]) modes.set(match[2], match[1]);
   }
+  const deleted = await runner.runChecked(root, [
+    "diff",
+    "--cached",
+    "--raw",
+    "-z",
+    "--diff-filter=D",
+    "--",
+    ...files,
+  ]);
+  const deletionRecords = deleted.stdout.split("\0");
+  for (let index = 0; index < deletionRecords.length - 1; index += 2) {
+    const header = deletionRecords[index];
+    const path = deletionRecords[index + 1];
+    const match = header ? /^:(\d+) 0+ [a-f0-9]+ 0+ D$/.exec(header) : undefined;
+    if (match?.[1] && path) modes.set(path, match[1]);
+  }
   return modes;
 };
 

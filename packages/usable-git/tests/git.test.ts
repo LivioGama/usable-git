@@ -161,7 +161,7 @@ describe("Git primitives", () => {
     try {
       await commitFile(repository, "deleted.txt", "before\n", "baseline");
       await rm(join(repository.path, "deleted.txt"));
-      await repository.git("add", "--", "deleted.txt");
+      await repository.run("add", "--", "deleted.txt");
 
       expect(await validateLiteralFiles(repository.path, ["deleted.txt"])).toEqual([
         "deleted.txt",

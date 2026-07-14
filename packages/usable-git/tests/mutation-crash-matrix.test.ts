@@ -199,6 +199,11 @@ describe("publish durable crash matrix", () => {
       }
 
       await expectUnrelatedState(repo);
+      expect(
+        await Array.fromAsync(
+          new Bun.Glob("publish-recovery/**/*.json").scan({ cwd: stateRoot }),
+        ),
+      ).toEqual([]);
     });
   }
 });

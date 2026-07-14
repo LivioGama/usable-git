@@ -46,6 +46,9 @@ describe("Git primitives", () => {
       await expect(validateLiteralFiles(repository.path, ["."])).rejects.toThrow();
       await expect(validateLiteralFiles(repository.path, ["../escape"])).rejects.toThrow();
       await expect(validateLiteralFiles(repository.path, [":(glob)*"])).rejects.toThrow();
+      await expect(
+        validateLiteralFiles(repository.path, ["line\nbreak.txt", "line\nbreak.txt"]),
+      ).rejects.toThrow(/duplicate/i);
     } finally {
       await repository.cleanup();
     }

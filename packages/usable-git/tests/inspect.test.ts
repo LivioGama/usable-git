@@ -43,4 +43,19 @@ describe("inspect", () => {
     const after = await inspect({ repoPath: repo.path });
     expect(after.changes[0]?.fingerprint).not.toBe(before.changes[0]?.fingerprint);
   });
+
+  test("reports unborn HEAD, stash count, and in-progress state explicitly", async () => {
+    const repo = await repository();
+    const unborn = await inspect({ repoPath: repo.path });
+    expect(unborn.head).toEqual({ kind: "unborn" });
+    expect(unborn.stashCount).toBe(0);
+    expect(unborn.inProgress).toEqual([]);
+
+    await commitFile(repo, "tracked.txt", "base\n", "initial");
+    await writeFile(repo, "tracked.txt", "stashed\n");
+    await repo.run("stash", "push", "--quiet");
+    const withStash = await inspect({ repoPath: repo.path });
+    expect(withStash.head.kind).toBe("oid");
+    expect(withStash.stashCount).toBe(1);
+  });
 });

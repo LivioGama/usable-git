@@ -24,6 +24,8 @@ describe("history", () => {
     const first = await history({ repoPath: repo.path, limit: 1 });
     expect(first.commits).toHaveLength(1);
     expect(first.commits[0]?.message).toContain("second");
+    expect(first.commits[0]?.committer.email).toBe("usable-git@example.test");
+    expect(first.head.kind).toBe("oid");
     expect(first.nextCursor).toBeDefined();
 
     const second = await history({ repoPath: repo.path, limit: 1, cursor: first.nextCursor });
@@ -35,5 +37,26 @@ describe("history", () => {
     await commitFile(repo, "one.txt", "one", "first");
     const result = await history({ repoPath: repo.path, ref: "HEAD", limit: 20 });
     expect(result.commits).toHaveLength(1);
+  });
+
+  test("returns explicit unborn state", async () => {
+    const repo = await repository();
+    const result = await history({ repoPath: repo.path });
+    expect(result).toMatchObject({ commits: [], head: { kind: "unborn" } });
+  });
+
+  test("rejects a cursor after the bound ref advances", async () => {
+    const repo = await repository();
+    await commitFile(repo, "one.txt", "one", "first");
+    await commitFile(repo, "two.txt", "two", "second");
+    const first = await history({ repoPath: repo.path, limit: 1 });
+    await commitFile(repo, "three.txt", "three", "third");
+
+    const error = await history({
+      repoPath: repo.path,
+      limit: 1,
+      cursor: first.nextCursor,
+    }).catch((caught) => caught);
+    expect(error).toMatchObject({ code: "STALE_STATE" });
   });
 });

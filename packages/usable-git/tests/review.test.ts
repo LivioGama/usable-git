@@ -48,4 +48,35 @@ describe("review", () => {
     const second = await review({ repoPath: repo.path, byteCap: 180, cursor: first.nextCursor });
     expect(second.items).not.toEqual(first.items);
   });
+
+  test("rejects cursors after the bound repository snapshot changes", async () => {
+    const repo = await repository();
+    await commitFile(repo, "large.txt", "base\n", "initial");
+    await writeFile(repo, "large.txt", "changed\n".repeat(100));
+    const first = await review({ repoPath: repo.path, byteCap: 180 });
+    expect(first.nextCursor).toBeDefined();
+
+    await writeFile(repo, "large.txt", "different\n".repeat(100));
+    const error = await review({
+      repoPath: repo.path,
+      byteCap: 180,
+      cursor: first.nextCursor,
+    }).catch((caught) => caught);
+    expect(error).toMatchObject({ code: "STALE_STATE" });
+  });
+
+  test("rejects a cursor reused with a different request", async () => {
+    const repo = await repository();
+    await commitFile(repo, "large.txt", "base\n", "initial");
+    await writeFile(repo, "large.txt", "changed\n".repeat(100));
+    const first = await review({ repoPath: repo.path, byteCap: 180 });
+
+    const error = await review({
+      repoPath: repo.path,
+      files: ["large.txt"],
+      byteCap: 180,
+      cursor: first.nextCursor,
+    }).catch((caught) => caught);
+    expect(error).toMatchObject({ code: "INVALID_INPUT" });
+  });
 });

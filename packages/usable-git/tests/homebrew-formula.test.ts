@@ -44,6 +44,7 @@ describe("Homebrew formula generation", () => {
     expect(formula).not.toContain("Digest::SHA256.file");
     expect(formula).not.toContain("shell_output(");
     expect(formula).toContain('"publish", "--json"');
+    expect(formula).toContain('File.write repo/"selected.txt", "after\\n"');
     expect(formula).toContain('assert_match " M unrelated.txt"');
     expect(formula).toContain('"push", "--json"');
     expect(formula).toContain('assert_equal pushed.fetch("result").fetch("newTargetOid")');

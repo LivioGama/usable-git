@@ -123,8 +123,8 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
     system git, "-C", repo, "add", "--", "selected.txt", "unrelated.txt"
     system git, "-C", repo, "commit", "-m", "seed"
 
-    (repo/"selected.txt").write "after\\n"
-    (repo/"unrelated.txt").write "preserve this dirty change\\n"
+    File.write repo/"selected.txt", "after\\n"
+    File.write repo/"unrelated.txt", "preserve this dirty change\\n"
     head_output, head_error, head_status = Open3.capture3(
       git, "-C", repo.to_s, "rev-parse", "HEAD"
     )

@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { exists, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  createTelemetrySink,
   telemetryEventSchema,
   type TelemetryEventInput,
-} from "@usable-git/telemetry/event";
+} from "@usable-git/contracts/v1/telemetry";
+import { createTelemetrySink } from "@usable-git/telemetry/event";
 import { withTempDirectory } from "./support/temp";
 
 const eventInput: Omit<TelemetryEventInput, "repositoryIdentity"> = {

@@ -214,6 +214,7 @@ export const createOperationJournal = (
       updatedAt: now().toISOString(),
     };
     await writeDurably(journalPath(repoKey, requestId), next);
+    await prune();
     return next;
   };
 

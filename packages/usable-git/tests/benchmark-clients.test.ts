@@ -15,9 +15,13 @@ describe("real benchmark client adapters", () => {
       artifactPath: "/tmp/devin-export.json",
       mutating: true,
     };
-    const invocations = Object.fromEntries(
-      benchmarkClientIds.map((client) => [client, createClientInvocation(client, inputs)]),
-    );
+    expect(benchmarkClientIds).toEqual(["codex", "claude-code", "cursor", "devin"]);
+    const invocations = {
+      codex: createClientInvocation("codex", inputs),
+      "claude-code": createClientInvocation("claude-code", inputs),
+      cursor: createClientInvocation("cursor", inputs),
+      devin: createClientInvocation("devin", inputs),
+    };
 
     expect(invocations.codex.command).toBe("codex");
     expect(invocations.codex.args).toContain("--json");

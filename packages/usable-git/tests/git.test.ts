@@ -68,6 +68,63 @@ describe("Git primitives", () => {
     }
   });
 
+  test("strips the banned Anthropic API key from Git subprocesses", async () => {
+    const repository = await createRepository();
+    const previous = process.env.ANTHROPIC_API_KEY;
+    try {
+      process.env.ANTHROPIC_API_KEY = "must-never-reach-git";
+      const result = await createGitRunner().run(repository.path, [
+        "-c",
+        "alias.check-env=!test -z \"$ANTHROPIC_API_KEY\"",
+        "check-env",
+      ]);
+      expect(result.exitCode).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+      await repository.cleanup();
+    }
+  });
+
+  test("bounds Git output and redacts credentials", async () => {
+    const repository = await createRepository();
+    try {
+      const runner = createGitRunner({ maxOutputBytes: 96 });
+      const result = await runner.run(repository.path, [
+        "-c",
+        "alias.leak=!printf 'https://user:secret@example.test Bearer supersecret ghp_abcdefghijklmnopqrstuvwxyz1234567890 padding-padding-padding-padding'",
+        "leak",
+      ]);
+
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(96);
+      expect(result.stdout).not.toContain("secret");
+      expect(result.stdout).not.toContain("supersecret");
+      expect(result.stdout).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+      expect(result.stdoutTruncated).toBe(true);
+    } finally {
+      await repository.cleanup();
+    }
+  });
+
+  test("terminates Git commands after the configured timeout", async () => {
+    const repository = await createRepository();
+    try {
+      const runner = createGitRunner({ timeoutMs: 25 });
+      const startedAt = performance.now();
+      const result = await runner.run(repository.path, [
+        "-c",
+        "alias.wait=!sleep 2",
+        "wait",
+      ]);
+
+      expect(result.timedOut).toBe(true);
+      expect(result.exitCode).not.toBe(0);
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      await repository.cleanup();
+    }
+  });
+
   test("discovers the worktree and common Git directory", async () => {
     const repository = await createRepository();
     try {

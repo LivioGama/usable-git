@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { executeOperation } from "../src/service.ts";
 import {
   commitFile,
@@ -57,6 +60,26 @@ describe("semantic operation service", () => {
       },
       error: { code: "INVALID_INPUT" },
     });
+  });
+
+  test("reports Git subprocesses consumed before an operation failure", async () => {
+    const nonRepository = await mkdtemp(join(tmpdir(), "usable-git-non-repo-"));
+    try {
+      const envelope = await executeOperation(
+        "inspect",
+        { repoPath: nonRepository },
+        { transport: "cli" },
+      );
+
+      expect(envelope).toMatchObject({
+        ok: false,
+        operation: "inspect",
+        error: { code: "INVALID_REPOSITORY" },
+      });
+      expect(envelope.gitSubprocessCount).toBeGreaterThan(0);
+    } finally {
+      await rm(nonRepository, { recursive: true, force: true });
+    }
   });
 
   test("keeps CLI and MCP operation semantics equivalent", async () => {

@@ -10,9 +10,19 @@ import { GitCommandError, withGitMetrics } from "./git/runner.ts";
 import { history } from "./operations/history.ts";
 import { inspect } from "./operations/inspect.ts";
 import { review } from "./operations/review.ts";
+import {
+  createTelemetrySink,
+  type TelemetryEventInput,
+  type TelemetrySink,
+} from "./telemetry/event.ts";
 
 export type Operation = z.infer<typeof operationSchema>;
-export type ServiceOptions = { transport: "mcp" | "cli" };
+export type ServiceOptions = {
+  transport: "mcp" | "cli";
+  client?: TelemetryEventInput["client"];
+  clientVersion?: string;
+  telemetrySink?: TelemetrySink;
+};
 
 const requestedPath = (input: unknown) =>
   input && typeof input === "object" && "repoPath" in input && typeof input.repoPath === "string"
@@ -92,6 +102,56 @@ const repositoryState = (input: unknown, result?: unknown) => {
   };
 };
 
+const countArray = (value: unknown, key: string) => {
+  if (!value || typeof value !== "object") return 0;
+  const candidate = (value as Record<string, unknown>)[key];
+  return Array.isArray(candidate) ? candidate.length : 0;
+};
+
+const emitTelemetry = async (
+  envelope: V1Envelope,
+  input: unknown,
+  options: ServiceOptions,
+) => {
+  const sink = options.telemetrySink ?? createTelemetrySink({
+    enabled: process.env.USABLE_GIT_TELEMETRY === "1",
+  });
+  const result = envelope.ok ? envelope.result : undefined;
+  const selected = input && typeof input === "object" && "files" in input && Array.isArray(input.files)
+    ? input.files.length
+    : 0;
+  try {
+    await sink.emit({
+      operation: envelope.operation,
+      client: options.client ?? "other",
+      transport: envelope.transport,
+      durationMs: envelope.durationMs,
+      gitSubprocessCount: envelope.gitSubprocessCount,
+      resultCode: envelope.ok ? "success" : envelope.error.code,
+      counts: {
+        selected,
+        staged: countArray(result, "staged"),
+        unstaged: countArray(result, "unstaged"),
+        untracked: countArray(result, "untracked"),
+        conflicted: countArray(result, "conflicted"),
+        commits: countArray(result, "commits") || (
+          result && typeof result === "object" && "commitOid" in result ? 1 : 0
+        ),
+        warnings: envelope.warnings.length,
+      },
+      components: {
+        usableGit: "0.1.0",
+        bun: Bun.version,
+        git: "unknown",
+        client: options.clientVersion ?? "unknown",
+      },
+      repositoryIdentity: envelope.repository.root ?? envelope.repository.requestedPath,
+    });
+  } catch {
+    // Telemetry is best-effort and must never change repository semantics.
+  }
+};
+
 export const executeOperation = async (
   rawOperation: Operation,
   input: unknown,
@@ -101,7 +161,7 @@ export const executeOperation = async (
   const operation = operationSchema.parse(rawOperation);
   try {
     const measured = await withGitMetrics(() => invoke(operation, input));
-    return v1EnvelopeSchema.parse({
+    const envelope = v1EnvelopeSchema.parse({
       version: "v1",
       ok: true,
       operation,
@@ -114,8 +174,10 @@ export const executeOperation = async (
       warnings: [],
       result: measured.result,
     });
+    await emitTelemetry(envelope, input, options);
+    return envelope;
   } catch (error) {
-    return v1EnvelopeSchema.parse({
+    const envelope = v1EnvelopeSchema.parse({
       version: "v1",
       ok: false,
       operation,
@@ -128,5 +190,7 @@ export const executeOperation = async (
       warnings: [],
       error: classifyError(error),
     });
+    await emitTelemetry(envelope, input, options);
+    return envelope;
   }
 };

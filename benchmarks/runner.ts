@@ -14,6 +14,8 @@ import {
 import { summarizeMetric, type MetricSummary } from "./statistics.ts";
 
 export const benchmarkScenarios = ["inspect-dirty", "publish-scoped"] as const;
+export const releaseBenchmarkClientIds = ["codex", "claude-code", "devin"] as const;
+export const minimumReleaseTrialsPerScenarioClient = 40;
 export type BenchmarkScenario = (typeof benchmarkScenarios)[number];
 export type BenchmarkMethod = "raw-git" | "semantic";
 
@@ -93,7 +95,7 @@ export type BenchmarkArtifact = {
     trialsPerScenarioClient: number;
     scenarios: BenchmarkScenario[];
     clients: string[];
-    minimumReleaseTrials: 30;
+    minimumReleaseTrials: typeof minimumReleaseTrialsPerScenarioClient;
   };
   trials: BenchmarkTrial[];
   summary: BenchmarkSummary[];
@@ -578,20 +580,22 @@ const evaluateReleaseGate = (
   clientVersions: Record<string, string | null>,
 ) => {
   const reasons: string[] = [];
-  if (benchmarkClientIds.some((client) => !clients.includes(client))) {
-    reasons.push("client matrix must include codex, claude-code, cursor, and devin");
+  if (releaseBenchmarkClientIds.some((client) => !clients.includes(client))) {
+    reasons.push("client matrix must include codex, claude-code, and devin");
   }
-  if (benchmarkClientIds.some((client) => clientVersions[client] == null)) {
+  if (releaseBenchmarkClientIds.some((client) => clientVersions[client] == null)) {
     reasons.push("one or more required client versions are unavailable");
   }
-  if (trialsPerScenarioClient < 30) reasons.push("fewer than 30 trials per scenario/client");
+  if (trialsPerScenarioClient < minimumReleaseTrialsPerScenarioClient) {
+    reasons.push("fewer than 40 trials per scenario/client");
+  }
   const summariesByKey = new Map(
     summaries.map((summary) => [
       `${summary.client}\u0000${summary.scenario}\u0000${summary.method}`,
       summary,
     ]),
   );
-  const completeRequiredMatrix = benchmarkClientIds.every((client) =>
+  const completeRequiredMatrix = releaseBenchmarkClientIds.every((client) =>
     benchmarkScenarios.every((scenario) =>
       (["raw-git", "semantic"] as const).every((method) =>
         summariesByKey.get(`${client}\u0000${scenario}\u0000${method}`)?.trials ===
@@ -626,19 +630,20 @@ const evaluateReleaseGate = (
     groups.set(key, { ...(groups.get(key) ?? {}), [summary.method]: summary });
   }
   for (const [key, pair] of groups) {
+    const label = key.replaceAll("\u0000", " / ");
     const raw = pair["raw-git"];
     const semantic = pair.semantic;
     if (!raw || !semantic) {
-      reasons.push(`${key}: incomplete raw/semantic pair`);
+      reasons.push(`${label}: incomplete raw/semantic pair`);
       continue;
     }
     const operationReduction = 1 - semantic.agentFacingOperations.median / raw.agentFacingOperations.median;
-    if (operationReduction < 0.5) reasons.push(`${key}: agent-facing operation reduction below 50%`);
+    if (operationReduction < 0.5) reasons.push(`${label}: agent-facing operation reduction below 50%`);
     const p95Reduction = 1 - semantic.durationMs.p95 / raw.durationMs.p95;
-    if (p95Reduction < 0.3) reasons.push(`${key}: p95 duration reduction below 30%`);
+    if (p95Reduction < 0.3) reasons.push(`${label}: p95 duration reduction below 30%`);
     if (raw.gitRelatedTokens && semantic.gitRelatedTokens) {
       const tokenReduction = 1 - semantic.gitRelatedTokens.median / raw.gitRelatedTokens.median;
-      if (tokenReduction < 0.3) reasons.push(`${key}: Git-related token reduction below 30%`);
+      if (tokenReduction < 0.3) reasons.push(`${label}: Git-related token reduction below 30%`);
     }
   }
   return { pass: reasons.length === 0, reasons: [...new Set(reasons)] };
@@ -648,8 +653,8 @@ export const runBenchmarkMatrix = async (
   options: BenchmarkMatrixOptions,
 ): Promise<BenchmarkArtifact> => {
   const scenarios = options.scenarios ?? [...benchmarkScenarios];
-  if (!options.allowShortRun && options.trials < 30) {
-    throw new Error("release benchmark requires at least 30 trials per scenario and client");
+  if (!options.allowShortRun && options.trials < minimumReleaseTrialsPerScenarioClient) {
+    throw new Error("release benchmark requires at least 40 trials per scenario and client");
   }
   if (!Number.isInteger(options.trials) || options.trials < 1) {
     throw new Error("trials must be a positive integer");
@@ -697,7 +702,7 @@ export const runBenchmarkMatrix = async (
       trialsPerScenarioClient: options.trials,
       scenarios,
       clients: options.clients,
-      minimumReleaseTrials: 30,
+      minimumReleaseTrials: minimumReleaseTrialsPerScenarioClient,
     },
     trials,
     summary,

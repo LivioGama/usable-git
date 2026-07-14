@@ -146,11 +146,13 @@ export const createClientInvocation = (
     };
   }
   if (client === "claude-code") {
+    const model = process.env.USABLE_GIT_CLAUDE_MODEL ?? "sonnet";
     return {
       ...common,
       command: "claude",
       args: [
-        "-p",
+        "--model",
+        model,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -159,6 +161,7 @@ export const createClientInvocation = (
         "dontAsk",
         "--allowedTools",
         "Bash,mcp__usable-git__*",
+        "-p",
         prompt,
       ],
     };

@@ -28,6 +28,13 @@ on `main`.
 | Installed executable | Stable path observed at `/opt/homebrew/bin/usable-git` |
 | Source archive | SHA-256 `c4d154dc0b102bb8cc39b807a442b51211d971446090340d614a10d66303ae56` for baseline HEAD |
 | Global routing rule | Deployed and pushed in `LivioGama/agent-config` commit `bd7b284e52cf70b2c31bd792c413ecf9e8979347` |
+| Local non-Cursor benchmark | `benchmarks/results/usable-git-benchmark-20260714T203040Z.{json,md}`: 3 clients, 2 scenarios, 40 paired trials per client/scenario, 240 paired trials total; **not release-eligible** |
+
+Latest local client versions recorded in the benchmark artifact:
+
+- Codex: `0.144.4`
+- Claude Code: `2.1.209`; `--model sonnet` resolved to `claude-sonnet-5`
+- Devin CLI: `3000.1.27 (0d4bf12e)`
 
 Final Linux Homebrew logs from the baseline run:
 
@@ -39,55 +46,58 @@ them as v1 performance evidence.
 
 ## Remaining release work
 
-### 1. Authenticate Cursor on the remote benchmark host
-
-Target host: `exodus`.
-
-Codex, Claude Code, and Devin were authenticated there. Cursor Agent was installed but
-`cursor-agent status` returned `Not logged in`. Complete Cursor's interactive login in a
-separate terminal pane, then confirm status. Never commit credentials or tokens.
-
-```sh
-rtk ssh exodus
-rtk cursor-agent login
-rtk cursor-agent status
-```
-
-### 2. Prepare the exact pushed revision on `exodus`
+### 1. Prepare the exact local revision
 
 Use the same commit for every trial. Install locked dependencies with Bun. Record exact
-versions for Bun, Git, Codex, Claude Code, Cursor Agent, and Devin in the benchmark
+versions for Bun, Git, Codex, Claude Code, and Devin in the benchmark
 invocation/artifact.
 
-Do not run this release-sized job on the Mac. It exceeds the local compute limit.
+This handoff is now scoped to the local Mac. Do not use `exodus`, and do not include
+Cursor Agent in this local run.
 
-### 3. Run the real-agent paired benchmark matrix
+### 2. Resolve local real-client benchmark blockers
+
+The requested local non-Cursor matrix has been run and preserved at
+`benchmarks/results/usable-git-benchmark-20260714T203040Z.{json,md}`. It is complete
+for the requested local matrix but failed the release gate.
+
+Observed blockers:
+
+- Codex semantic sessions passed, but Codex raw-Git sessions did not emit the exact
+  structured raw Git tool-call evidence the harness requires.
+- Claude Code local fresh sessions failed to produce completed structured tool calls.
+  The local model resolved to `claude-sonnet-5`; the stream reported the `usable-git`
+  MCP server as `pending`.
+- Devin fresh sessions were rate-limited and emitted no parseable structured evidence.
+- The automated release gate now matches the local three-client policy: Codex,
+  Claude Code, and Devin, with 40 paired trials per scenario/client.
+
+### 3. Re-run the local real-agent paired benchmark matrix after fixes
 
 Required matrix:
 
-- 4 clients: Codex, Claude Code, Cursor Agent, Devin
+- 3 clients: Codex, Claude Code, Devin
 - 2 scenarios: `inspect-dirty`, `publish-scoped`
-- 30 paired trials per client/scenario
+- 40 paired trials per client/scenario
 - 240 paired trials; 480 fresh client sessions total
 - fixed seed: `20260714`
 
-From the checked-out pushed revision on `exodus`:
+From the checked-out local revision:
 
 ```sh
-rtk bun benchmarks/run.ts \
-  --clients codex,claude-code,cursor,devin \
+USABLE_GIT_CLAUDE_MODEL=sonnet bun benchmarks/run.ts \
+  --clients codex,claude-code,devin \
   --client-version codex=<exact-version> \
   --client-version claude-code=<exact-version> \
-  --client-version cursor=<exact-version> \
   --client-version devin=<exact-version> \
-  --trials 30 \
+  --trials 40 \
   --seed 20260714 \
   --output benchmarks/results
 ```
 
 Keep both generated raw JSON and Markdown report. Commit them only if the artifact contains
-the complete matrix and real structured evidence. Do not substitute the short `harness`
-fixture for release evidence.
+the complete requested local matrix and real structured evidence. Do not substitute the
+short `harness` fixture for evidence.
 
 ### 4. Evaluate every release gate
 
@@ -95,7 +105,7 @@ All gates must pass together:
 
 - 100% repository correctness, final-state oracle success, and recovery
 - zero unrelated-work loss or corruption
-- 100% clean-install activation across all four clients
+- 100% clean-install activation across Codex, Claude Code, and Devin
 - at least 95% semantic-tool adoption when applicable
 - at least 50% fewer agent-facing Git operations
 - at least 30% lower Git-related tokens
@@ -107,6 +117,9 @@ All gates must pass together:
 Any missing/unparseable usage data or incomplete client matrix is a release-gate failure,
 not a result to estimate around.
 
+The automated release gate is intentionally scoped to the local three-client policy.
+Cursor Agent is no longer required for this v1 gate.
+
 ### 5. Publish only after a passing artifact
 
 If every gate passes:
@@ -117,7 +130,7 @@ If every gate passes:
    `packaging/homebrew/prepare-release.ts` and the existing Homebrew tests.
 4. Update `LivioGama/homebrew-tap` only after checksum and macOS/Linux formula gates pass.
 5. Create the v1 tag and GitHub release from the same verified commit.
-6. Confirm clean installation and all four client doctors from the public formula.
+6. Confirm clean installation and Codex, Claude Code, and Devin doctors from the public formula.
 
 If a gate fails, keep the candidate unreleased, preserve the raw artifact, fix the measured
 cause, and rerun the complete matrix. Do not publish a partial result.

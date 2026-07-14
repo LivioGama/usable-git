@@ -573,7 +573,7 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
         "-",
       ]
     : client === "claude"
-      ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
+      ? ["--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "-p", prompt]
       : client === "devin"
         ? ["--permission-mode", "dangerous", "--export", devinExportPath as string, "-p", prompt]
         : [

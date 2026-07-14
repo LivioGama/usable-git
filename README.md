@@ -26,10 +26,11 @@ Homebrew release gates. The decision-complete specifications are:
 
 Do not treat the current checkout as a released service. The macOS and Linux formula
 candidates have passed source installation and real MCP/publish/push tests. The installed
-macOS candidate also passes fresh-session activation checks in Codex, Claude Code, Cursor
-Agent, and Devin CLI. The public tap remains unchanged until every release gate passes.
-The 30-trial real-agent matrix is blocked by missing Cursor authentication on the remote
-benchmark host, so adoption, token, and p95 gates remain unproven release blockers.
+macOS candidate also passed prior fresh-session activation checks in Codex, Claude Code,
+Cursor Agent, and Devin CLI. The public tap remains unchanged until every release gate
+passes. The current local non-Cursor benchmark policy requires Codex, Claude Code, and
+Devin CLI with 40 paired trials per scenario/client; adoption, token, and p95 gates remain
+unproven release blockers until that local matrix passes.
 
 ## Source-checkout usage
 
@@ -84,7 +85,7 @@ V1 will not be tagged until reproducible evidence shows:
 
 - 100% repository correctness and recovery.
 - Zero unrelated-work loss or corruption.
-- 100% clean-install activation across Codex, Claude Code, Cursor Agent, and Devin CLI.
+- 100% clean-install activation across Codex, Claude Code, and Devin CLI.
 - At least 95% semantic-tool adoption when applicable.
 - At least 50% fewer agent-facing Git operations.
 - At least 30% lower Git-related tokens and p95 end-to-end time.

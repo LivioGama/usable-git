@@ -28,6 +28,8 @@ describe("real benchmark client adapters", () => {
     expect(invocations.codex.args).toContain("--json");
     expect(invocations.codex.args).toContain("--ephemeral");
     expect(invocations["claude-code"].command).toBe("claude");
+    expect(invocations["claude-code"].args).toContain("--model");
+    expect(invocations["claude-code"].args).toContain("sonnet");
     expect(invocations["claude-code"].args).toContain("stream-json");
     expect(invocations["claude-code"].args).toContain("--no-session-persistence");
     expect(invocations.cursor.command).toBe("agent");

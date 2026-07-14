@@ -29,7 +29,7 @@ describe("paired benchmark harness", () => {
       .toBeGreaterThanOrEqual(0.5);
   }, 20_000);
 
-  test("refuses release artifacts below 30 trials per scenario and client", async () => {
+  test("refuses release artifacts below 40 trials per scenario and client", async () => {
     await expect(
       runBenchmarkMatrix({
         clients: ["codex"],
@@ -37,20 +37,19 @@ describe("paired benchmark harness", () => {
         trials: 2,
         seed: 1,
       }),
-    ).rejects.toThrow("at least 30 trials");
+    ).rejects.toThrow("at least 40 trials");
   });
 
   test("blocks release eligibility when the required scenario matrix is incomplete", async () => {
     const artifact = await runBenchmarkMatrix({
-      clients: ["codex", "claude-code", "cursor", "devin"],
+      clients: ["codex", "claude-code", "devin"],
       clientVersions: {
         codex: "test-version",
         "claude-code": "test-version",
-        cursor: "test-version",
         devin: "test-version",
       },
       scenarios: [],
-      trials: 30,
+      trials: 40,
       seed: 11,
     });
 
@@ -139,7 +138,7 @@ describe("paired benchmark harness", () => {
       "Git-related client token measurements unavailable",
     );
     expect(artifact.releaseGate.reasons).toContain(
-      "client matrix must include codex, claude-code, cursor, and devin",
+      "client matrix must include codex, claude-code, and devin",
     );
   }, 20_000);
 

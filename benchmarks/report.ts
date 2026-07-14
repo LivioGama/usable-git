@@ -28,10 +28,10 @@ export const renderBenchmarkMarkdown = (
 
 Status: **${gate}**
 
-Generated: ${artifact.generatedAt}  
-Commit: \`${artifact.environment.commitSha}\`  
-Seed: \`${artifact.configuration.seed}\`  
-Trials per scenario/client: ${artifact.configuration.trialsPerScenarioClient}  
+Generated: ${artifact.generatedAt}
+Commit: \`${artifact.environment.commitSha}\`
+Seed: \`${artifact.configuration.seed}\`
+Trials per scenario/client: ${artifact.configuration.trialsPerScenarioClient}
 Raw trial artifact: [${rawJsonFileName}](./${rawJsonFileName})
 
 ## Environment
@@ -56,7 +56,7 @@ ${rows.join("\n")}
 
 ${reasons.join("\n")}
 
-Token values marked unavailable were not measured or estimated. No performance claim may use them. Short runs are fixture checks only; v1 requires at least 30 trials per scenario and client.
+Token values marked unavailable were not measured or estimated. No performance claim may use them. Short runs are fixture checks only; v1 requires at least 40 trials per scenario and client.
 `;
 };
 

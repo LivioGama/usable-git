@@ -9,11 +9,11 @@ import {
 } from "./runner.ts";
 
 const usage = `Usage: bun benchmarks/run.ts \\
-  --clients codex,claude-code,cursor,devin \\
-  --trials 30 --seed 20260714 [--scenarios inspect-dirty,publish-scoped] \\
+  --clients codex,claude-code,devin \\
+  --trials 40 --seed 20260714 [--scenarios inspect-dirty,publish-scoped] \\
   [--client-version client=version] [--output benchmarks/results]
 
---allow-short-run permits fixture checks below 30 trials. Their report remains non-release-eligible.
+--allow-short-run permits fixture checks below 40 trials. Their report remains non-release-eligible.
 `;
 
 const valuesFor = (args: string[], flag: string) =>

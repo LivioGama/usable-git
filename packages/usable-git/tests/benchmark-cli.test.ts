@@ -8,7 +8,7 @@ describe("benchmark CLI", () => {
     const outputDirectory = await mkdtemp(join(tmpdir(), "usable-git-benchmark-cli-"));
     try {
       const child = Bun.spawn([
-        "bun",
+        process.execPath,
         "benchmarks/run.ts",
         "--clients",
         "harness",

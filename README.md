@@ -1,164 +1,72 @@
-# usable-git - Semantic Git for Coding Agents
+# usable-git
 
-![Status](https://img.shields.io/badge/status-speed%20proof-1f883d)
-![Runtime](https://img.shields.io/badge/runtime-Bun%201.3.14-black)
-![Git](https://img.shields.io/badge/git-2.54.0-f05032)
-![Benchmark](https://img.shields.io/badge/benchmark-100%20trials-blue)
+Semantic Git operations for coding agents.
 
-<a href="https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
+`usable-git` is moving from a prose rule and measurement prototype to an executable repository service. The v1 contract gives agents five structured operations:
 
-### Git should be a repository API, not a transcript of shell commands.
+| Operation | Purpose |
+|---|---|
+| `inspect` | Read local repository, branch, and change state in one structured snapshot. |
+| `review` | Return staged and unstaged evidence without mixing the two. |
+| `history` | Read deterministic, paginated local commit history. |
+| `publish` | Commit exact files while preserving every unrelated change. |
+| `push` | Update exactly one explicit remote branch with fast-forward or exact lease safety. |
 
-`usable-git` is a speed proof for exposing Git to coding agents as semantic repository operations. Instead of making an agent reason through `git status`, `git add`, `git commit`, `git rev-parse`, and follow-up checks, the prototype proves that a focused repository backend can perform the same transformation directly and much faster.
+MCP is the primary transport. A JSON CLI provides the same schemas and results when MCP is unavailable. Git CLI remains the v1 repository backend.
 
-## 🎯 What It Is For
+## Status
 
-Coding agents are slow and brittle when Git is only available as a CLI surface. A simple commit workflow becomes a sequence of subprocesses, text parsing, intermediate state checks, and follow-up reasoning.
+V1 is under implementation. The approved, decision-complete specifications are:
 
-`usable-git` demonstrates the opposite shape:
+- [Product behavior](specs/usable-git-v1/PRODUCT.md)
+- [Technical design and verification](specs/usable-git-v1/TECH.md)
 
-```text
-agent intent
-   ↓
-publish(paths, message)
-   ↓
-repository transformation
-   ↓
-commit hash + clean state
-```
+Do not treat the current checkout as a released semantic Git service until the release gates in those specs pass. Homebrew installation, client activation, semantic commands, and performance targets are release deliverables—not current guarantees.
 
-The goal is not to hide Git. The goal is to expose Git as safe, structured, reversible operations that agents can call directly.
+The existing executable baseline is `git-mine`, a Bun/TypeScript prototype that parses agent logs and measures shell-Git episode shapes. It does not yet provide repository mutation operations.
 
-## 🏁 Result
+## Safety model
 
-The scoped semantic publish path is materially faster than the raw Git CLI workflow it replaces.
+V1 is deliberately narrow:
 
-| Metric | Raw Git Commit | Semantic Publish | Result |
-|---|---:|---:|---|
-| Success rate | 100% | 100% | Tie |
-| Final clean repo state | 100% | 100% | Tie |
-| Median wall-clock | 18.94 ms | 0.89 ms | Semantic is 21.3x faster |
-| P95 wall-clock | 22.59 ms | 1.04 ms | Semantic is 21.7x faster |
-| Shell/Git processes in hot path | 2 | 0 | Semantic eliminates subprocesses |
-| Agent-facing operations | 3 | 2 | Semantic reduces by 33.3% |
+- Explicit literal files only.
+- Optimistic HEAD and change fingerprints for mutations.
+- One lock and crash-recovery journal per Git common directory.
+- No silent expansion to directories, globs, implicit upstreams, or multiple refs.
+- Unrelated staged, unstaged, and untracked work must survive unchanged.
+- Ambiguous remote outcomes are reported, never blindly retried.
+- Direct Git object writes are excluded from v1.
 
-## 📊 Benchmark Data
+The v1 routing rule will allow unsupported operations to fall back to scoped raw Git. A rejected semantic mutation will never fall back to a broader command that bypasses its safety decision.
 
-Benchmark date: 2026-07-03  
-Runtime: Bun 1.3.14, Git 2.54.0, macOS arm64  
-Trials: 100 per scenario
+## Release gates
 
-### Raw Git Commit
+V1 will not be tagged until reproducible evidence shows:
 
-The baseline workflow measured:
+- 100% repository correctness and recovery.
+- Zero unrelated-work loss or corruption.
+- 100% clean-install activation across Codex, Claude Code, Cursor Agent, and Devin CLI.
+- At least 95% semantic-tool adoption when applicable.
+- At least 50% fewer agent-facing Git operations.
+- At least 30% lower Git-related tokens and p95 end-to-end time.
 
-```text
-write file
-git add <file>
-git commit -q -m <message>
-```
+Benchmark artifacts must include raw results, trial counts, environment and component versions, commit SHA, median, p95, confidence intervals, and final-state oracles.
 
-### Semantic Publish
+## Historical prototype result
 
-The semantic workflow measured:
+The previous README reported the following direct-object-write benchmark from 2026-07-03 on Bun 1.3.14, Git 2.54.0, and macOS arm64:
 
-```text
-write file
-publish(repoPath, message, { paths: [file] })
-```
+| Metric | Raw Git commit | Prototype semantic publish |
+|---|---:|---:|
+| Success rate | 100% | 100% |
+| Final clean state | 100% | 100% |
+| Median wall-clock | 18.94 ms | 0.89 ms |
+| P95 wall-clock | 22.59 ms | 1.04 ms |
+| Git subprocesses in hot path | 2 | 0 |
+| Agent-facing operations | 3 | 2 |
 
-The semantic hot path does not spawn `git`. It writes the required Git data directly.
+These numbers are **historical and unverified in the current checkout**: the raw benchmark artifacts and runnable benchmark path are not present. They are not a v1 performance claim. The tested fast path was limited to root-level regular files in repositories without an existing HEAD and wrote Git objects/index/refs directly; v1 intentionally uses guarded Git CLI semantics instead.
 
-## 🏗️ How The Fast Path Works
+## License
 
-Instead of shelling out to Git for every step:
-
-```text
-git add
-git diff --cached --name-only
-git commit
-git rev-parse
-git status
-```
-
-the fast path writes repository state directly:
-
-```text
-file content
-   ↓
-blob object
-   ↓
-tree object
-   ↓
-commit object
-   ↓
-index file + branch ref
-```
-
-That removes Git process startup, stdout/stderr parsing, and extra state-probing commands from the hot path.
-
-## ✨ Why It Matters
-
-- **Less latency**: the measured semantic publish path is 21.3x faster at median wall-clock time.
-- **Fewer subprocesses**: the hot path uses 0 external Git processes instead of 2.
-- **Less agent work**: the agent issues one semantic publish intent instead of composing multiple Git operations.
-- **Cleaner API surface**: the result can return structured fields like committed files, commit hash, status, and telemetry.
-- **Better direction for infrastructure**: it validates a long-lived Git service, libgit2/gitoxide backend, or jj-backed semantic repository daemon.
-
-## 🔐 Safety Boundaries
-
-This is a speed proof, not a complete Git replacement.
-
-The fast path is intentionally narrow:
-
-- explicit paths only
-- root-level regular files only
-- simple repositories with no existing `HEAD`
-- broad staging is refused unless explicitly allowed
-- unsupported cases fall back to the Git-backed implementation
-
-Those limits are part of the point: the semantic API can choose safe, optimized paths when the repository shape is known and fall back when it is not.
-
-## 🧪 Verification
-
-Commands run locally against the prototype:
-
-```sh
-bun test
-bun scripts/benchmark.mjs --trials 100
-```
-
-Results:
-
-- Test suite: 7 pass, 0 fail, 61 assertions.
-- Benchmark: 100/100 successful raw trials.
-- Benchmark: 100/100 successful semantic trials.
-- Both workflows left repositories clean in 100% of trials.
-- Regression test confirms fast publish creates a valid Git commit with `0` Git subprocesses in the hot path.
-- `git fsck --strict` accepts the fast-path repository.
-
-## 🚀 Agent-First Usage
-
-Install the global rule through the `agent-config` deeplink handler:
-
-<a href="https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md"><img src="https://raw.githubusercontent.com/LivioGama/agent-config/main/assets/install-badge-small.jpg" alt="Install usable-git global rule" height="40" /></a>
-
-Install URL:
-
-```text
-https://liviogama.github.io/agent-config/redirect.html?url=https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md
-```
-
-Raw rule URL:
-
-```text
-https://raw.githubusercontent.com/LivioGama/usable-git/main/.agent-config/rules/usable-git.md
-```
-
-Paste this repository into an agent and ask it to use the benchmark data as the target shape for a semantic Git API:
-
-```text
-Design a Git backend where agents call publish(paths, message), checkpoint(), review(), undo(), and history() instead of driving Git through shell commands. Preserve the benchmark data in README.md and expand the implementation from the scoped fast path toward a general repository service.
-```
-
-For a production implementation, the next step is to keep the semantic API and move the backend into a long-lived repository service backed by libgit2, gitoxide, jj, or a purpose-built Git object engine.
+MIT. See [LICENSE](LICENSE).

@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":"Do a status check please"},"timestamp":"2026-07-06T00:00:00.000Z"}
+{"type":"mode","mode":"normal","sessionId":"mock_session_1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking status"},{"type":"tool_use","id":"toolu_status","name":"Bash","input":{"command":"git status"}}]},"timestamp":"2026-07-06T00:00:01.000Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"On branch main\nNothing to commit","tool_use_id":"toolu_status"}]},"toolUseResult":{"stdout":"On branch main\nNothing to commit","stderr":"","exitCode":0},"timestamp":"2026-07-06T00:00:02.000Z"}
+{"type":"system","subtype":"local_command","content":"<local-command-stdout></local-command-stdout>","timestamp":"2026-07-06T00:00:03.000Z"}

@@ -112,7 +112,7 @@ describe("operation journal", () => {
       let now = Date.parse("2026-01-01T00:00:00.000Z");
       const journal = createOperationJournal({
         stateRoot: join(directory, "state"),
-        retentionMaxAgeMs: 1_000,
+        retentionMaxAgeMs: 2_000,
         retentionMaxCount: 1,
         now: () => new Date(now),
       });

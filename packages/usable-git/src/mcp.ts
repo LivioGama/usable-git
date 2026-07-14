@@ -100,5 +100,20 @@ export const createMcpServer = (options: { telemetrySink?: TelemetrySink } = {})
 
 export const runMcpServer = async () => {
   const server = createMcpServer();
-  await server.connect(new StdioServerTransport());
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      if (process.stdin.readableEnded || process.stdin.destroyed) {
+        resolve();
+        return;
+      }
+      const finish = () => resolve();
+      process.stdin.once("end", finish);
+      process.stdin.once("close", finish);
+      process.stdin.once("error", reject);
+    });
+  } finally {
+    await server.close();
+  }
 };

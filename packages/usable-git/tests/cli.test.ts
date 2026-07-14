@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { runCli } from "../src/cli.ts";
+import { runCli as runCliCommand } from "../src/cli.ts";
 import {
   commitFile,
   createRepository,
@@ -74,7 +74,7 @@ describe("usable-git JSON CLI", () => {
   test("routes install --clients all through the safe client installer", async () => {
     const output: string[] = [];
     const calls: unknown[] = [];
-    const exitCode = await runCli(["install", "--clients", "all", "--force"], {
+    const exitCode = await runCliCommand(["install", "--clients", "all", "--force"], {
       executablePath: "/opt/homebrew/bin/usable-git",
       writeStdout: (value) => output.push(value),
       writeStderr: () => undefined,

@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { operationSchema } from "./contracts/v1.ts";
+import { resolve } from "node:path";
+import { installClients, type InstallClient, type InstallClientsOptions } from "./install/index.ts";
 import { executeOperation } from "./service.ts";
 
 const usage = `Usage:
@@ -9,9 +11,23 @@ const usage = `Usage:
   usable-git doctor --clients all
 `;
 
-const failUsage = (message?: string) => {
-  if (message) console.error(message);
-  console.error(usage);
+type CliDependencies = {
+  executablePath: string;
+  writeStdout: (value: string) => void;
+  writeStderr: (value: string) => void;
+  installClients: (options: InstallClientsOptions) => ReturnType<typeof installClients>;
+};
+
+const defaultDependencies = (): CliDependencies => ({
+  executablePath: resolve(process.argv[1] ?? "usable-git"),
+  writeStdout: (value) => process.stdout.write(value),
+  writeStderr: (value) => process.stderr.write(value),
+  installClients,
+});
+
+const failUsage = (writeStderr: CliDependencies["writeStderr"], message?: string) => {
+  if (message) writeStderr(`${message}\n`);
+  writeStderr(usage);
   return 64;
 };
 
@@ -25,7 +41,14 @@ const readStdinRequest = async (args: string[]) => {
   return JSON.parse(serialized) as unknown;
 };
 
-export const runCli = async (args = process.argv.slice(2)) => {
+const selectedClients = (value: string): "all" | InstallClient[] =>
+  value === "all" ? "all" : value.split(",") as InstallClient[];
+
+export const runCli = async (
+  args = process.argv.slice(2),
+  overrides: Partial<CliDependencies> = {},
+) => {
+  const dependencies = { ...defaultDependencies(), ...overrides };
   const command = args[0];
   const parsedOperation = operationSchema.safeParse(command);
   if (parsedOperation.success) {
@@ -33,11 +56,11 @@ export const runCli = async (args = process.argv.slice(2)) => {
     try {
       input = await readStdinRequest(args.slice(1));
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      return failUsage();
+      dependencies.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+      return failUsage(dependencies.writeStderr);
     }
     const envelope = await executeOperation(parsedOperation.data, input, { transport: "cli" });
-    process.stdout.write(`${JSON.stringify(envelope)}\n`);
+    dependencies.writeStdout(`${JSON.stringify(envelope)}\n`);
     return envelope.ok ? 0 : 2;
   }
 
@@ -47,7 +70,32 @@ export const runCli = async (args = process.argv.slice(2)) => {
     return 0;
   }
 
-  return failUsage(command ? `Unknown command: ${command}` : undefined);
+  if (command === "install") {
+    const clientsIndex = args.indexOf("--clients");
+    const clientsValue = clientsIndex === -1 ? undefined : args[clientsIndex + 1];
+    if (!clientsValue) return failUsage(dependencies.writeStderr, "install requires --clients");
+    try {
+      const results = await dependencies.installClients({
+        clients: selectedClients(clientsValue),
+        executablePath: dependencies.executablePath,
+        force: args.includes("--force"),
+      });
+      dependencies.writeStdout(`${JSON.stringify({ ok: true, command: "install", results })}\n`);
+      return 0;
+    } catch (error) {
+      dependencies.writeStdout(`${JSON.stringify({
+        ok: false,
+        command: "install",
+        error: {
+          code: error && typeof error === "object" && "code" in error ? error.code : "install_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      })}\n`);
+      return 2;
+    }
+  }
+
+  return failUsage(dependencies.writeStderr, command ? `Unknown command: ${command}` : undefined);
 };
 
 if (import.meta.main) {

@@ -91,6 +91,23 @@ describe("usable-git JSON CLI", () => {
     });
   });
 
+  test("executes a real inspect request from explicit JSON flags", async () => {
+    const repository = await createRepository();
+    repositories.push(repository);
+    await writeFile(repository, "new.txt", "new\n");
+
+    const outcome = await runCli(["inspect", "--json", "--repo-path", repository.path]);
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stderr).toBe("");
+    expect(JSON.parse(outcome.stdout)).toMatchObject({
+      version: "v1",
+      ok: true,
+      operation: "inspect",
+      transport: "cli",
+      result: { untracked: ["new.txt"] },
+    });
+  });
+
   test("returns a JSON error envelope and stable nonzero exit", async () => {
     const outcome = await runCli(["inspect", "--input", "-"], { repoPath: "relative" });
     expect(outcome.exitCode).toBe(2);

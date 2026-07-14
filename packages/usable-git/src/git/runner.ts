@@ -14,6 +14,15 @@ export type GitRunnerOptions = {
   onSpawn?: (event: GitSpawnEvent) => void;
 };
 
+type GitMetrics = { gitSubprocessCount: number };
+const operationMetrics = new AsyncLocalStorage<GitMetrics>();
+
+export const withGitMetrics = async <T>(operation: () => Promise<T>) => {
+  const metrics: GitMetrics = { gitSubprocessCount: 0 };
+  const result = await operationMetrics.run(metrics, operation);
+  return { result, gitSubprocessCount: metrics.gitSubprocessCount };
+};
+
 export class GitCommandError extends Error {
   readonly argv: string[];
   readonly cwd: string;
@@ -73,6 +82,8 @@ export const createGitRunner = (options: GitRunnerOptions = {}) => ({
       ...args,
     ];
     const event = { argv, cwd };
+    const metrics = operationMetrics.getStore();
+    if (metrics) metrics.gitSubprocessCount += 1;
     options.onSpawn?.(event);
     const child = Bun.spawn(argv, {
       cwd,
@@ -120,3 +131,4 @@ export const createGitRunner = (options: GitRunnerOptions = {}) => ({
 export type GitRunner = ReturnType<typeof createGitRunner>;
 
 export const git = createGitRunner();
+import { AsyncLocalStorage } from "node:async_hooks";

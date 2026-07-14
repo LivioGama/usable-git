@@ -109,4 +109,36 @@ describe("semantic operation service", () => {
     expect(JSON.stringify(events[0])).not.toContain("private contents");
     expect(JSON.stringify(events[0])).not.toContain("new.txt");
   });
+
+  test("returns a valid success envelope for the real publish path", async () => {
+    const repo = await repository();
+    await writeFile(repo, "selected.txt", "selected\n");
+    const inspected = await executeOperation(
+      "inspect",
+      { repoPath: repo.path, files: ["selected.txt"] },
+      { transport: "cli" },
+    );
+    if (!inspected.ok) throw new Error("inspect failed");
+    const inspectedResult = inspected.result as {
+      changes: Array<{ path: string; fingerprint: string }>;
+    };
+    const fingerprint = inspectedResult.changes[0]!.fingerprint;
+    const envelope = await executeOperation("publish", {
+      repoPath: repo.path,
+      files: ["selected.txt"],
+      message: "publish through service",
+      requestId: "service-publish",
+      expectedHead: { kind: "unborn" },
+      expectedFingerprints: { "selected.txt": fingerprint },
+    }, { transport: "cli" });
+    expect(envelope).toMatchObject({
+      ok: true,
+      operation: "publish",
+      repository: {
+        root: repo.path,
+        head: { kind: "oid" },
+      },
+      result: { committedPaths: ["selected.txt"] },
+    });
+  });
 });

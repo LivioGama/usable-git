@@ -104,6 +104,9 @@ describe("paired benchmark harness", () => {
     expect(artifact.releaseGate.reasons).not.toContain(
       "Git-related client token measurements unavailable",
     );
+    expect(artifact.releaseGate.reasons).toContain(
+      "client matrix must include codex, claude-code, cursor, and devin",
+    );
   }, 20_000);
 
   test("blocks release eligibility when a client omits parseable token evidence", async () => {
@@ -151,5 +154,43 @@ describe("paired benchmark harness", () => {
     expect(artifact.trials.every(({ evidenceErrors }) =>
       evidenceErrors.includes("client JSON did not expose complete token usage")
     )).toBe(true);
+  }, 20_000);
+
+  test("rejects semantic publish evidence that never called publish", async () => {
+    const processRunner: BenchmarkClientProcessRunner = async () => ({
+      exitCode: 0,
+      durationMs: 10,
+      stderr: "",
+      stdout: [
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "inspect-only",
+            type: "mcp_tool_call",
+            server: "usable-git",
+            tool: "inspect",
+            result: { metrics: { gitSubprocessCount: 2 } },
+          },
+        }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 20, output_tokens: 5 },
+        }),
+      ].join("\n"),
+    });
+    const artifact = await runBenchmarkMatrix({
+      clients: ["codex"],
+      clientVersions: { codex: "test-version" },
+      scenarios: ["publish-scoped"],
+      trials: 1,
+      seed: 14,
+      allowShortRun: true,
+      clientProcessRunner: processRunner,
+    });
+    const semantic = artifact.trials.find(({ method }) => method === "semantic")!;
+
+    expect(semantic.success).toBe(false);
+    expect(semantic.semanticAdopted).toBe(false);
+    expect(semantic.evidenceErrors).toContain("missing expected semantic operation: publish");
   }, 20_000);
 });

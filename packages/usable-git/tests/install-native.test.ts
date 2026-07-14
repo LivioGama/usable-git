@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { InstallConflictError } from "@usable-git/install/cursor.ts";
 import {
+  createInstallRunner,
   InstallCommandError,
   installNativeClient,
   type InstallRunner,
@@ -45,6 +46,23 @@ const writeClaudeConfig = async (home: string, entry: unknown) => {
   await writeFile(path, `${JSON.stringify({ sentinel: "keep", mcpServers: { "usable-git": entry } }, null, 2)}\n`);
   return path;
 };
+
+test("never forwards a banned ANTHROPIC_API_KEY to client subprocesses", async () => {
+  const previous = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "banned-test-value";
+  try {
+    const result = await createInstallRunner()({
+      command: "printenv",
+      args: ["ANTHROPIC_API_KEY"],
+      env: {},
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+  } finally {
+    if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previous;
+  }
+});
 
 const writeDevinConfig = async (home: string, entry: unknown) => {
   const path = join(home, ".config", "devin", "config.json");

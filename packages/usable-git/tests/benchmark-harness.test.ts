@@ -19,6 +19,13 @@ describe("paired benchmark harness", () => {
     expect(artifact.trials.every(({ gitRelatedTokens }) => gitRelatedTokens.value === null)).toBe(
       true,
     );
+    const publish = artifact.summary.filter(({ scenario }) => scenario === "publish-scoped");
+    const raw = publish.find(({ method }) => method === "raw-git")!;
+    const semantic = publish.find(({ method }) => method === "semantic")!;
+    expect(raw.agentFacingOperations.median).toBeGreaterThanOrEqual(4);
+    expect(semantic.agentFacingOperations.median).toBeLessThanOrEqual(2);
+    expect(1 - semantic.agentFacingOperations.median / raw.agentFacingOperations.median)
+      .toBeGreaterThanOrEqual(0.5);
   }, 20_000);
 
   test("refuses release artifacts below 30 trials per scenario and client", async () => {

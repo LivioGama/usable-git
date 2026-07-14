@@ -26,13 +26,88 @@ export type PublishRecoveryState = {
 
 type PublishRecoveryStoreOptions = { stateRoot?: string };
 
+export type PublishRecoveryIdentity = Pick<
+  PublishRecoveryState,
+  "requestId" | "repoKey" | "inputHash" | "preHead" | "files"
+>;
+
+export class RecoveryMetadataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RecoveryMetadataError";
+  }
+}
+
 const defaultStateRoot = () =>
   process.env.XDG_STATE_HOME
     ? join(process.env.XDG_STATE_HOME, "usable-git")
     : join(homedir(), ".local", "state", "usable-git");
 
-const fileName = (requestId: string) =>
-  `${createHash("sha256").update(requestId).digest("hex")}.json`;
+const hashKey = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
+
+const fileName = (requestId: string) => `${hashKey(requestId)}.json`;
+
+const isObjectId = (value: unknown) =>
+  typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
+
+const isChecksum = (value: unknown) =>
+  typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+
+const isSerializedIndex = (value: unknown): value is SerializedIndexSnapshot => {
+  if (!value || typeof value !== "object") return false;
+  const index = value as Record<string, unknown>;
+  if (index.exists === false) return index.checksum === null;
+  if (index.exists !== true) return false;
+  if (!isChecksum(index.checksum) || typeof index.bytesBase64 !== "string") {
+    return false;
+  }
+  if (!Number.isInteger(index.mode) || (index.mode as number) < 0) return false;
+  try {
+    return Buffer.from(index.bytesBase64, "base64").toString("base64") === index.bytesBase64;
+  } catch {
+    return false;
+  }
+};
+
+const validateState = (value: unknown): PublishRecoveryState => {
+  if (!value || typeof value !== "object") {
+    throw new RecoveryMetadataError("Recovery metadata is unreadable");
+  }
+  const state = value as Record<string, unknown>;
+  const files = state.files;
+  const validFiles =
+    Array.isArray(files) &&
+    files.length > 0 &&
+    files.every((file) => typeof file === "string" && file.length > 0) &&
+    new Set(files).size === files.length;
+  if (
+    state.schemaVersion !== 1 ||
+    typeof state.requestId !== "string" ||
+    typeof state.repoKey !== "string" ||
+    typeof state.inputHash !== "string" ||
+    !["snapshotted", "index_staged", "commit_started"].includes(
+      state.phase as string,
+    ) ||
+    !(state.preHead === null || isObjectId(state.preHead)) ||
+    !validFiles ||
+    !isSerializedIndex(state.index) ||
+    !(state.ownedIndexChecksum === null || isChecksum(state.ownedIndexChecksum))
+  ) {
+    throw new RecoveryMetadataError("Recovery metadata is unreadable");
+  }
+  return value as PublishRecoveryState;
+};
+
+const sameIdentity = (
+  state: PublishRecoveryState,
+  expected: PublishRecoveryIdentity,
+) =>
+  state.requestId === expected.requestId &&
+  state.repoKey === expected.repoKey &&
+  state.inputHash === expected.inputHash &&
+  state.preHead === expected.preHead &&
+  JSON.stringify(state.files) === JSON.stringify(expected.files);
 
 const writeDurably = async (path: string, state: PublishRecoveryState) => {
   await mkdir(dirname(path), { recursive: true });
@@ -62,24 +137,39 @@ export const createPublishRecoveryStore = (
   options: PublishRecoveryStoreOptions = {},
 ) => {
   const root = options.stateRoot ?? defaultStateRoot();
-  const pathFor = (requestId: string) =>
-    join(root, "publish-recovery", fileName(requestId));
+  const pathFor = (repoKey: string, requestId: string) =>
+    join(root, "publish-recovery", hashKey(repoKey), fileName(requestId));
 
-  const read = async (requestId: string): Promise<PublishRecoveryState | null> => {
+  const read = async (
+    expected: PublishRecoveryIdentity,
+  ): Promise<PublishRecoveryState | null> => {
     try {
-      return JSON.parse(
-        await readFile(pathFor(requestId), "utf8"),
-      ) as PublishRecoveryState;
+      const state = validateState(
+        JSON.parse(await readFile(pathFor(expected.repoKey, expected.requestId), "utf8")),
+      );
+      if (!sameIdentity(state, expected)) {
+        throw new RecoveryMetadataError(
+          "Recovery metadata identity does not match the request",
+        );
+      }
+      return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if (error instanceof RecoveryMetadataError) throw error;
+      if (error instanceof SyntaxError) {
+        throw new RecoveryMetadataError("Recovery metadata is unreadable");
+      }
       throw error;
     }
   };
 
-  const write = (state: PublishRecoveryState) =>
-    writeDurably(pathFor(state.requestId), state);
+  const write = (state: PublishRecoveryState) => {
+    const validated = validateState(state);
+    return writeDurably(pathFor(validated.repoKey, validated.requestId), validated);
+  };
 
-  const remove = (requestId: string) => rm(pathFor(requestId), { force: true });
+  const remove = (repoKey: string, requestId: string) =>
+    rm(pathFor(repoKey, requestId), { force: true });
 
   return { read, write, remove };
 };

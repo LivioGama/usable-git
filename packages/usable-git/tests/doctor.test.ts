@@ -90,6 +90,40 @@ describe("runDoctor", () => {
     expect(devin?.args).toContain("dangerous");
   });
 
+  test("accepts a completed Codex MCP inspect even when the client hangs after the tool result", async () => {
+    const invoke = createDoctorClientInvoker();
+    const processRunner: DoctorProcessRunner = async ({ args }) => args.includes("--version")
+      ? { exitCode: 0, stdout: "0.114.0\n", stderr: "" }
+      : {
+          exitCode: 124,
+          stdout: JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "mcp_tool_call",
+              server: "usable-git",
+              tool: "inspect",
+              status: "completed",
+              result: { content: [{ type: "text", text: "inspect: ok (6 git subprocesses)" }] },
+            },
+          }),
+          stderr: "process timed out",
+        };
+
+    await expect(invoke({
+      client: "codex",
+      executablePath: "/opt/homebrew/bin/usable-git",
+      home: "/tmp/home",
+      repoPath: "/tmp/repository",
+      processRunner,
+    })).resolves.toMatchObject({
+      available: true,
+      invoked: true,
+      operation: "inspect",
+      transport: "mcp",
+    });
+  });
+
+
   test("proves the real CLI, raw MCP, publish preservation, push, registrations, and fresh clients", async () =>
     withTempDirectory("usable-git-doctor-home-", async (home) => {
       const executablePath = await executableFixture(home);

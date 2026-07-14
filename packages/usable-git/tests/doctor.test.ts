@@ -83,6 +83,22 @@ describe("runDoctor", () => {
         }));
         return { exitCode: 0, stdout: "Operation: inspect — success\n", stderr: "" };
       }
+      if (command === "agent" && !args.includes("--version")) {
+        return {
+          exitCode: 0,
+          stdout: `${JSON.stringify({
+            type: "tool_call",
+            subtype: "completed",
+            tool_call: {
+              mcpToolCall: {
+                args: { providerIdentifier: "usable-git", toolName: "inspect" },
+                result: { success: { isError: false } },
+              },
+            },
+          })}\n`,
+          stderr: "",
+        };
+      }
       return args.includes("--version")
         ? { exitCode: 0, stdout: "1.0.0\n", stderr: "" }
         : { exitCode: 0, stdout: "mcp__usable-git__inspect ok\n", stderr: "" };
@@ -101,8 +117,10 @@ describe("runDoctor", () => {
     }
 
     const cursor = requests.find(({ command, args }) => command === "agent" && !args.includes("--version"));
+    expect(cursor?.args).toContain("--force");
     expect(cursor?.args).toContain("--trust");
     expect(cursor?.args).toContain("--approve-mcps");
+    expect(cursor?.args).toContain("stream-json");
     const devin = requests.find(({ command, args }) => command === "devin" && !args.includes("--version"));
     expect(devin?.args).toContain("dangerous");
     expect(devin?.args).toContain("--export");

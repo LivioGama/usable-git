@@ -3,6 +3,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import {
+  createDoctorClientInvoker,
   createDoctorProcessRunner,
   runDoctor,
   type DoctorClientInvoker,
@@ -61,6 +62,34 @@ const writeMatchingConfigs = async (home: string, executablePath: string) => {
 };
 
 describe("runDoctor", () => {
+  test("uses explicit noninteractive MCP approval for Cursor and Devin", async () => {
+    const requests: Array<{ command: string; args: string[] }> = [];
+    const processRunner: DoctorProcessRunner = async ({ command, args }) => {
+      requests.push({ command, args });
+      return args.includes("--version")
+        ? { exitCode: 0, stdout: "1.0.0\n", stderr: "" }
+        : { exitCode: 0, stdout: "mcp__usable-git__inspect ok\n", stderr: "" };
+    };
+    const invoke = createDoctorClientInvoker();
+
+    for (const client of ["cursor", "devin"] as const) {
+      const result = await invoke({
+        client,
+        executablePath: "/opt/homebrew/bin/usable-git",
+        home: "/tmp/home",
+        repoPath: "/tmp/repository",
+        processRunner,
+      });
+      expect(result).toMatchObject({ available: true, invoked: true, operation: "inspect" });
+    }
+
+    const cursor = requests.find(({ command, args }) => command === "agent" && !args.includes("--version"));
+    expect(cursor?.args).toContain("--trust");
+    expect(cursor?.args).toContain("--approve-mcps");
+    const devin = requests.find(({ command, args }) => command === "devin" && !args.includes("--version"));
+    expect(devin?.args).toContain("dangerous");
+  });
+
   test("proves the real CLI, raw MCP, publish preservation, push, registrations, and fresh clients", async () =>
     withTempDirectory("usable-git-doctor-home-", async (home) => {
       const executablePath = await executableFixture(home);

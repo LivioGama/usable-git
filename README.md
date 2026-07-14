@@ -16,14 +16,49 @@ MCP is the primary transport. A JSON CLI provides the same schemas and results w
 
 ## Status
 
-V1 is under implementation. The approved, decision-complete specifications are:
+The v1 release candidate now implements the five operations, guarded mutation recovery,
+matching CLI/MCP transports, client registration, doctor diagnostics, metadata-only
+telemetry, semantic `git-mine` ingestion, property tests, and reproducible benchmark and
+Homebrew release gates. The decision-complete specifications are:
 
 - [Product behavior](specs/usable-git-v1/PRODUCT.md)
 - [Technical design and verification](specs/usable-git-v1/TECH.md)
 
-Do not treat the current checkout as a released semantic Git service until the release gates in those specs pass. Homebrew installation, client activation, semantic commands, and performance targets are release deliverables—not current guarantees.
+Do not treat the current checkout as a released service. The macOS formula candidate has
+passed source installation and its real MCP/publish/push test, but the public tap remains
+unchanged until every release gate passes. Linux formula proof, four-client activation,
+real-agent adoption, token, and p95 gates remain release blockers.
 
-The existing executable baseline is `git-mine`, a Bun/TypeScript prototype that parses agent logs and measures shell-Git episode shapes. It does not yet provide repository mutation operations.
+## Source-checkout usage
+
+Install locked workspace dependencies:
+
+```sh
+bun install --frozen-lockfile
+```
+
+Run one semantic operation through explicit JSON flags:
+
+```sh
+bun packages/usable-git/src/cli.ts inspect --json --repo-path "$PWD"
+```
+
+Or send the same request as one JSON object on stdin:
+
+```sh
+printf '%s\n' "{\"repoPath\":\"$PWD\"}" |
+  bun packages/usable-git/src/cli.ts inspect --input -
+```
+
+The protocol server is local stdio:
+
+```sh
+bun packages/usable-git/src/cli.ts mcp
+```
+
+`install --clients all` and `doctor --clients all` are intended for the stable Homebrew
+executable path. Do not register a transient source-checkout path in permanent client
+configuration.
 
 ## Safety model
 
@@ -37,7 +72,9 @@ V1 is deliberately narrow:
 - Ambiguous remote outcomes are reported, never blindly retried.
 - Direct Git object writes are excluded from v1.
 
-The v1 routing rule will allow unsupported operations to fall back to scoped raw Git. A rejected semantic mutation will never fall back to a broader command that bypasses its safety decision.
+The v1 routing rule allows unsupported operations to fall back to scoped raw Git. A
+rejected semantic mutation never falls back to a broader command that bypasses its safety
+decision.
 
 ## Release gates
 

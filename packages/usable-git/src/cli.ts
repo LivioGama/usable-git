@@ -47,6 +47,115 @@ const readStdinRequest = async (args: string[]) => {
 const selectedClients = (value: string): "all" | InstallClient[] =>
   value === "all" ? "all" : value.split(",") as InstallClient[];
 
+type JsonOperation = "inspect" | "review" | "history" | "publish" | "push";
+
+const allowedFlags: Record<JsonOperation, Set<string>> = {
+  inspect: new Set(["repo-path", "file"]),
+  review: new Set(["repo-path", "file", "cursor", "byte-cap"]),
+  history: new Set(["repo-path", "ref", "limit", "cursor", "byte-cap"]),
+  publish: new Set([
+    "repo-path", "file", "message", "request-id", "expected-head", "expected-fingerprint",
+  ]),
+  push: new Set([
+    "repo-path", "remote", "source-ref", "target-ref", "request-id", "expected-source-oid",
+    "mode", "expected-target-oid",
+  ]),
+};
+
+const parseFlags = (operation: JsonOperation, args: string[]) => {
+  if (!args.includes("--json")) throw new Error("JSON flag mode requires --json");
+  const values = new Map<string, string[]>();
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--json") continue;
+    if (!token.startsWith("--")) throw new Error(`Unexpected JSON argument: ${token}`);
+    const key = token.slice(2);
+    if (!allowedFlags[operation].has(key)) throw new Error(`Unknown ${operation} flag: ${token}`);
+    const value = args[index + 1];
+    if (value === undefined) throw new Error(`${token} requires a value`);
+    values.set(key, [...(values.get(key) ?? []), value]);
+    index += 1;
+  }
+  return values;
+};
+
+const one = (values: Map<string, string[]>, key: string) => {
+  const matches = values.get(key) ?? [];
+  if (matches.length > 1) throw new Error(`--${key} may be supplied only once`);
+  return matches[0];
+};
+
+const required = (values: Map<string, string[]>, key: string) => {
+  const value = one(values, key);
+  if (value === undefined) throw new Error(`--${key} is required`);
+  return value;
+};
+
+const integer = (values: Map<string, string[]>, key: string) => {
+  const value = one(values, key);
+  if (value === undefined) return undefined;
+  if (!/^-?\d+$/.test(value)) throw new Error(`--${key} must be an integer`);
+  return Number(value);
+};
+
+const optionalFiles = (values: Map<string, string[]>) => {
+  const files = values.get("file");
+  return files ? { files } : {};
+};
+
+export const parseJsonRequest = (operation: JsonOperation, args: string[]): unknown => {
+  const values = parseFlags(operation, args);
+  const repoPath = required(values, "repo-path");
+  if (operation === "inspect") return { repoPath, ...optionalFiles(values) };
+  if (operation === "review") {
+    return {
+      repoPath,
+      ...optionalFiles(values),
+      ...(one(values, "cursor") ? { cursor: one(values, "cursor") } : {}),
+      ...(integer(values, "byte-cap") !== undefined ? { byteCap: integer(values, "byte-cap") } : {}),
+    };
+  }
+  if (operation === "history") {
+    return {
+      repoPath,
+      ...(one(values, "ref") ? { ref: one(values, "ref") } : {}),
+      ...(integer(values, "limit") !== undefined ? { limit: integer(values, "limit") } : {}),
+      ...(one(values, "cursor") ? { cursor: one(values, "cursor") } : {}),
+      ...(integer(values, "byte-cap") !== undefined ? { byteCap: integer(values, "byte-cap") } : {}),
+    };
+  }
+  if (operation === "publish") {
+    const fingerprints = Object.fromEntries((values.get("expected-fingerprint") ?? []).map((entry) => {
+      const separator = entry.lastIndexOf("=");
+      if (separator <= 0) throw new Error("--expected-fingerprint requires path=sha256");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }));
+    const expectedHead = required(values, "expected-head");
+    return {
+      repoPath,
+      files: values.get("file") ?? [],
+      message: required(values, "message"),
+      requestId: required(values, "request-id"),
+      expectedHead: expectedHead === "unborn"
+        ? { kind: "unborn" }
+        : { kind: "oid", oid: expectedHead },
+      expectedFingerprints: fingerprints,
+    };
+  }
+  const mode = required(values, "mode");
+  return {
+    repoPath,
+    remote: required(values, "remote"),
+    sourceRef: required(values, "source-ref"),
+    targetRef: required(values, "target-ref"),
+    requestId: required(values, "request-id"),
+    expectedSourceOid: required(values, "expected-source-oid"),
+    mode: mode === "force-with-lease"
+      ? { kind: mode, expectedTargetOid: required(values, "expected-target-oid") }
+      : { kind: mode },
+  };
+};
+
 export const runCli = async (
   args = process.argv.slice(2),
   overrides: Partial<CliDependencies> = {},
@@ -57,7 +166,9 @@ export const runCli = async (
   if (parsedOperation.success) {
     let input: unknown;
     try {
-      input = await readStdinRequest(args.slice(1));
+      input = args.includes("--json")
+        ? parseJsonRequest(parsedOperation.data, args.slice(1))
+        : await readStdinRequest(args.slice(1));
     } catch (error) {
       dependencies.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
       return failUsage(dependencies.writeStderr);

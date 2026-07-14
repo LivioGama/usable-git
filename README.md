@@ -24,12 +24,12 @@ Homebrew release gates. The decision-complete specifications are:
 - [Product behavior](specs/usable-git-v1/PRODUCT.md)
 - [Technical design and verification](specs/usable-git-v1/TECH.md)
 
-Do not treat the current checkout as a released service. The macOS formula candidate has
-passed source installation and its real MCP/publish/push test. The installed candidate also
-passes fresh-session activation checks in Codex, Claude Code, Cursor Agent, and Devin CLI.
-The public tap remains unchanged until every release gate passes. Linux Homebrew formula
-proof and the 30-trial real-agent matrix remain unverified, so adoption, token, and p95
-gates remain release blockers.
+Do not treat the current checkout as a released service. The macOS and Linux formula
+candidates have passed source installation and real MCP/publish/push tests. The installed
+macOS candidate also passes fresh-session activation checks in Codex, Claude Code, Cursor
+Agent, and Devin CLI. The public tap remains unchanged until every release gate passes.
+The 30-trial real-agent matrix is blocked by missing Cursor authentication on the remote
+benchmark host, so adoption, token, and p95 gates remain unproven release blockers.
 
 ## Source-checkout usage
 

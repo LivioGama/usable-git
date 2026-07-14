@@ -62,10 +62,27 @@ const writeMatchingConfigs = async (home: string, executablePath: string) => {
 };
 
 describe("runDoctor", () => {
-  test("uses explicit noninteractive MCP approval for Cursor and Devin", async () => {
+  test("uses explicit noninteractive MCP approval and exported evidence for Devin", async () => {
     const requests: Array<{ command: string; args: string[] }> = [];
     const processRunner: DoctorProcessRunner = async ({ command, args }) => {
       requests.push({ command, args });
+      if (command === "devin" && !args.includes("--version")) {
+        const exportPath = args.at(args.indexOf("--export") + 1);
+        if (!exportPath) throw new Error("missing Devin export path");
+        await writeFile(exportPath, JSON.stringify({
+          type: "result",
+          messages: [{
+            role: "assistant",
+            content: [{
+              type: "tool_use",
+              id: "devin-inspect-1",
+              name: "mcp__usable-git__inspect",
+              input: {},
+            }],
+          }],
+        }));
+        return { exitCode: 0, stdout: "Operation: inspect — success\n", stderr: "" };
+      }
       return args.includes("--version")
         ? { exitCode: 0, stdout: "1.0.0\n", stderr: "" }
         : { exitCode: 0, stdout: "mcp__usable-git__inspect ok\n", stderr: "" };
@@ -88,6 +105,31 @@ describe("runDoctor", () => {
     expect(cursor?.args).toContain("--approve-mcps");
     const devin = requests.find(({ command, args }) => command === "devin" && !args.includes("--version"));
     expect(devin?.args).toContain("dangerous");
+    expect(devin?.args).toContain("--export");
+  });
+
+  test("rejects Devin plain-text success without exported structured tool evidence", async () => {
+    const requests: Array<{ command: string; args: string[] }> = [];
+    const processRunner: DoctorProcessRunner = async ({ command, args }) => {
+      requests.push({ command, args });
+      return args.includes("--version")
+        ? { exitCode: 0, stdout: "1.0.0\n", stderr: "" }
+        : { exitCode: 0, stdout: "Operation: inspect — ✅ success\n", stderr: "" };
+    };
+
+    await expect(createDoctorClientInvoker()({
+      client: "devin",
+      executablePath: "/opt/homebrew/bin/usable-git",
+      home: "/tmp/home",
+      repoPath: "/tmp/repository",
+      processRunner,
+    })).resolves.toMatchObject({
+      available: true,
+      invoked: false,
+    });
+
+    const invocation = requests.find(({ args }) => !args.includes("--version"));
+    expect(invocation?.args).toContain("--export");
   });
 
   test("accepts a completed Codex MCP inspect even when the client hangs after the tool result", async () => {

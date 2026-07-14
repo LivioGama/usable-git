@@ -472,6 +472,7 @@ const containsCompletedCodexInspect = (output: string) => output
 
 export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
   client,
+  executablePath,
   home,
   repoPath,
   processRunner,
@@ -490,7 +491,22 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     "Do not execute shell commands. Return only the operation name and success state.",
   ].join(" ");
   const args = client === "codex"
-    ? ["exec", "--json", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "-C", repoPath, prompt]
+    ? [
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--ignore-user-config",
+        "-c",
+        `mcp_servers.usable-git.command=${JSON.stringify(executablePath)}`,
+        "-c",
+        'mcp_servers.usable-git.args=["mcp"]',
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "-C",
+        repoPath,
+        prompt,
+      ]
     : client === "claude"
       ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
       : client === "devin"

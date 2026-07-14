@@ -123,6 +123,52 @@ describe("runDoctor", () => {
     });
   });
 
+  test("isolates Codex from user MCP config and injects only usable-git", async () => {
+    const requests: Array<{ command: string; args: string[] }> = [];
+    const executablePath = "/opt/homebrew/bin/usable-git";
+    const processRunner: DoctorProcessRunner = async ({ command, args }) => {
+      requests.push({ command, args });
+      return args.includes("--version")
+        ? { exitCode: 0, stdout: "0.114.0\n", stderr: "" }
+        : {
+            exitCode: 0,
+            stdout: `${JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "mcp_tool_call",
+                server: "usable-git",
+                tool: "inspect",
+                status: "completed",
+                result: { structuredContent: { ok: true, operation: "inspect" } },
+              },
+            })}\n`,
+            stderr: "",
+          };
+    };
+
+    await expect(createDoctorClientInvoker()({
+      client: "codex",
+      executablePath,
+      home: "/tmp/home",
+      repoPath: "/tmp/repository",
+      processRunner,
+    })).resolves.toMatchObject({
+      available: true,
+      invoked: true,
+      operation: "inspect",
+      transport: "mcp",
+    });
+
+    const invocation = requests.find(({ args }) => !args.includes("--version"));
+    expect(invocation?.command).toBe("codex");
+    expect(invocation?.args).toContain("--ignore-user-config");
+    expect(invocation?.args).toContain(
+      `mcp_servers.usable-git.command=${JSON.stringify(executablePath)}`,
+    );
+    expect(invocation?.args).toContain('mcp_servers.usable-git.args=["mcp"]');
+    expect(invocation?.args.filter((arg) => arg.startsWith("mcp_servers."))).toHaveLength(2);
+  });
+
 
   test("proves the real CLI, raw MCP, publish preservation, push, registrations, and fresh clients", async () =>
     withTempDirectory("usable-git-doctor-home-", async (home) => {

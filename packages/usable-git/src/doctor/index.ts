@@ -470,6 +470,36 @@ const containsCompletedCodexInspect = (output: string) => output
     }
   });
 
+const containsCompletedCursorInspect = (output: string) => output
+  .split(/\r?\n/)
+  .some((line) => {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      const toolCall = event.tool_call && typeof event.tool_call === "object"
+        ? event.tool_call as Record<string, unknown>
+        : undefined;
+      const mcpCall = toolCall?.mcpToolCall && typeof toolCall.mcpToolCall === "object"
+        ? toolCall.mcpToolCall as Record<string, unknown>
+        : undefined;
+      const args = mcpCall?.args && typeof mcpCall.args === "object"
+        ? mcpCall.args as Record<string, unknown>
+        : undefined;
+      const result = mcpCall?.result && typeof mcpCall.result === "object"
+        ? mcpCall.result as Record<string, unknown>
+        : undefined;
+      const success = result?.success && typeof result.success === "object"
+        ? result.success as Record<string, unknown>
+        : undefined;
+      return event.type === "tool_call" &&
+        event.subtype === "completed" &&
+        args?.providerIdentifier === "usable-git" &&
+        args.toolName === "inspect" &&
+        success?.isError === false;
+    } catch {
+      return false;
+    }
+  });
+
 const DEVIN_EXPORT_MAX_BYTES = 1_048_576;
 
 const isDevinInspectToolUse = (value: unknown): boolean => {
@@ -538,7 +568,15 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
       ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
       : client === "devin"
         ? ["--permission-mode", "dangerous", "--export", devinExportPath as string, "-p", prompt]
-        : ["-p", "--trust", "--approve-mcps", prompt];
+        : [
+            "-p",
+            "--force",
+            "--trust",
+            "--approve-mcps",
+            "--output-format",
+            "stream-json",
+            prompt,
+          ];
   try {
     const result = await processRunner({
       command,
@@ -553,7 +591,9 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     const invoked = client === "devin"
       ? result.exitCode === 0 && await containsExportedDevinInspect(devinExportPath as string)
       : containsCompletedCodexInspect(output) ||
-        (result.exitCode === 0 && containsSemanticInspectTrace(output));
+        (client === "cursor"
+          ? containsCompletedCursorInspect(output)
+          : result.exitCode === 0 && containsSemanticInspectTrace(output));
     return {
       available: true,
       invoked,

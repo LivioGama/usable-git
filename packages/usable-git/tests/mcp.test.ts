@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { join } from "node:path";
 import { createMcpServer } from "../src/mcp.ts";
 import type { TelemetryEventInput } from "../src/contracts/v1/telemetry.ts";
 import {
@@ -22,6 +23,25 @@ const connect = async () => {
 };
 
 describe("usable-git MCP server", () => {
+  test("exits promptly when the stdio client disconnects", async () => {
+    const child = Bun.spawn([
+      process.execPath,
+      join(import.meta.dir, "..", "src", "cli.ts"),
+      "mcp",
+    ], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    child.stdin.end();
+    const exitCode = await Promise.race([
+      child.exited,
+      new Promise<number>((resolve) => setTimeout(() => resolve(-1), 1_000)),
+    ]);
+    if (exitCode === -1) child.kill("SIGKILL");
+    expect(exitCode).toBe(0);
+  });
+
   test("exposes exactly five tools with accurate safety annotations and output schemas", async () => {
     const { server, client } = await connect();
     try {

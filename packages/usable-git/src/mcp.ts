@@ -11,6 +11,8 @@ import {
 import { publishRequestSchema } from "./contracts/v1/publish.ts";
 import { pushRequestSchema } from "./contracts/v1/push.ts";
 import { executeOperation, type Operation } from "./service.ts";
+import type { TelemetryEventInput } from "./contracts/v1/telemetry.ts";
+import type { TelemetrySink } from "./telemetry/event.ts";
 
 const toolAnnotations = {
   read: {
@@ -44,11 +46,25 @@ const toolResult = (envelope: V1Envelope): CallToolResult => ({
   ...(envelope.ok ? {} : { isError: true }),
 });
 
-const handler = (operation: Operation) => async (input: unknown): Promise<CallToolResult> =>
-  toolResult(await executeOperation(operation, input, { transport: "mcp" }));
+const telemetryClient = (name = ""): TelemetryEventInput["client"] => {
+  if (/codex/i.test(name)) return "codex";
+  if (/claude/i.test(name)) return "claude-code";
+  if (/cursor/i.test(name)) return "cursor-agent";
+  if (/devin/i.test(name)) return "devin-cli";
+  return "other";
+};
 
-export const createMcpServer = () => {
+export const createMcpServer = (options: { telemetrySink?: TelemetrySink } = {}) => {
   const server = new McpServer({ name: "usable-git", version: "0.1.0" });
+  const handler = (operation: Operation) => async (input: unknown): Promise<CallToolResult> => {
+    const client = server.server.getClientVersion();
+    return toolResult(await executeOperation(operation, input, {
+      transport: "mcp",
+      client: telemetryClient(client?.name),
+      clientVersion: client?.version,
+      ...(options.telemetrySink ? { telemetrySink: options.telemetrySink } : {}),
+    }));
+  };
   server.registerTool("inspect", {
     description: "Inspect one local repository snapshot without mutation or network access.",
     inputSchema: inspectRequestSchema.shape,

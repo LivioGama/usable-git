@@ -49,29 +49,51 @@ export const errorCodeSchema = z.enum([
   "GIT_FAILED",
 ]);
 
-const envelopeBaseSchema = z.object({
+export const operationSchema = z.enum(["inspect", "review", "history", "publish", "push"]);
+
+export const repositoryStateSchema = z.object({
+  requestedPath: z.string().min(1),
+  root: absolutePathSchema.nullable(),
+  head: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("unknown") }).strict(),
+    z.object({ kind: z.literal("unborn") }).strict(),
+    z.object({ kind: z.literal("oid"), oid: z.string().regex(/^[a-f0-9]{40}$|^[a-f0-9]{64}$/) }).strict(),
+  ]),
+  branch: z.string().min(1).nullable(),
+}).strict();
+
+export const warningSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+}).strict();
+
+const envelopeBase = {
   version: z.literal("v1"),
-  operationId: z.string().min(1),
+  operation: operationSchema,
+  requestId: z.string().min(1).optional(),
+  repository: repositoryStateSchema,
   backend: z.literal("git-cli"),
+  transport: z.enum(["mcp", "cli"]),
   durationMs: z.number().nonnegative(),
-  gitProcessCount: z.number().int().nonnegative(),
-  warnings: z.array(z.string()),
-  repository: z.record(z.string(), z.unknown()).optional(),
-});
+  gitSubprocessCount: z.number().int().nonnegative(),
+  warnings: z.array(warningSchema),
+};
 
 export const v1EnvelopeSchema = z.discriminatedUnion("ok", [
-  envelopeBaseSchema.extend({
+  z.object({
+    ...envelopeBase,
     ok: z.literal(true),
     result: z.unknown(),
-  }),
-  envelopeBaseSchema.extend({
+  }).strict(),
+  z.object({
+    ...envelopeBase,
     ok: z.literal(false),
     error: z.object({
       code: errorCodeSchema,
       message: z.string(),
       details: z.record(z.string(), z.unknown()).optional(),
-    }),
-  }),
+    }).strict(),
+  }).strict(),
 ]);
 
 export type InspectRequest = z.infer<typeof inspectRequestSchema>;

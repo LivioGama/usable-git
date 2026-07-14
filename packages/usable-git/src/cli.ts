@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { operationSchema } from "./contracts/v1.ts";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { runDoctor, type RunDoctorOptions } from "./doctor/index.ts";
 import { installClients, type InstallClient, type InstallClientsOptions } from "./install/index.ts";
 import { executeOperation } from "./service.ts";
@@ -20,8 +20,16 @@ type CliDependencies = {
   runDoctor: (options: RunDoctorOptions) => ReturnType<typeof runDoctor>;
 };
 
+export const resolveExecutablePath = (
+  environment: Record<string, string | undefined> = process.env,
+  entrypoint = process.argv[1] ?? "usable-git",
+) => {
+  const launcherPath = environment.USABLE_GIT_EXECUTABLE_PATH;
+  return launcherPath && isAbsolute(launcherPath) ? launcherPath : resolve(entrypoint);
+};
+
 const defaultDependencies = (): CliDependencies => ({
-  executablePath: resolve(process.argv[1] ?? "usable-git"),
+  executablePath: resolveExecutablePath(),
   writeStdout: (value) => process.stdout.write(value),
   writeStderr: (value) => process.stderr.write(value),
   installClients,

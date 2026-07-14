@@ -56,6 +56,7 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
     (bin/"usable-git").write <<~SH
       #!/bin/bash
       unset ANTHROPIC_API_KEY
+      export USABLE_GIT_EXECUTABLE_PATH="$0"
       exec "#{formula_opt_bin("bun")}/bun" "#{libexec}/packages/usable-git/src/cli.ts" "$@"
     SH
     (bin/"usable-git").chmod 0755

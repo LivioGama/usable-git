@@ -44,7 +44,6 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
   desc "Safe semantic Git operations for coding agents"
   homepage "https://github.com/LivioGama/usable-git"
   url "${url}"
-  version "${version}"
   sha256 "${sha256}"
   license "MIT"
 
@@ -52,60 +51,58 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
   depends_on "git"
 
   def install
-    system Formula["bun"].opt_bin/"bun", "install", "--production", "--frozen-lockfile"
+    system formula_opt_bin("bun")/"bun", "install", "--production", "--frozen-lockfile"
     libexec.install Dir["*"]
     (bin/"usable-git").write <<~SH
       #!/bin/bash
       unset ANTHROPIC_API_KEY
-      exec "#{Formula["bun"].opt_bin}/bun" "#{libexec}/packages/usable-git/src/cli.ts" "$@"
+      exec "#{formula_opt_bin("bun")}/bun" "#{libexec}/packages/usable-git/src/cli.ts" "$@"
     SH
+    (bin/"usable-git").chmod 0755
   end
 
   test do
-    require "digest"
     require "json"
     require "open3"
     require "timeout"
 
     executable = (bin/"usable-git").to_s
-    git = (Formula["git"].opt_bin/"git").to_s
+    git = (formula_opt_bin("git")/"git").to_s
 
     Open3.popen3(executable, "mcp") do |stdin, stdout, _stderr, wait_thread|
-      begin
-        initialize_request = {
-          "jsonrpc" => "2.0",
-          "id" => 1,
-          "method" => "initialize",
-          "params" => {
-            "protocolVersion" => "2025-06-18",
-            "capabilities" => {},
-            "clientInfo" => { "name" => "homebrew-test", "version" => "1.0.0" },
-          },
-        }
-        stdin.puts JSON.generate(initialize_request)
-        initialized = Timeout.timeout(10) { JSON.parse(stdout.gets) }
-        assert_equal 1, initialized.fetch("id")
-        assert_equal "usable-git", initialized.fetch("result").fetch("serverInfo").fetch("name")
+      initialize_request = {
+        "jsonrpc" => "2.0",
+        "id"      => 1,
+        "method"  => "initialize",
+        "params"  => {
+          "protocolVersion" => "2025-06-18",
+          "capabilities"    => {},
+          "clientInfo"      => { "name" => "homebrew-test", "version" => "1.0.0" },
+        },
+      }
+      stdin.puts JSON.generate(initialize_request)
+      initialized = Timeout.timeout(10) { JSON.parse(stdout.gets) }
+      assert_equal 1, initialized.fetch("id")
+      assert_equal "usable-git", initialized.fetch("result").fetch("serverInfo").fetch("name")
 
-        stdin.puts JSON.generate({
-          "jsonrpc" => "2.0",
-          "method" => "notifications/initialized",
-        })
-        stdin.puts JSON.generate({
-          "jsonrpc" => "2.0",
-          "id" => 2,
-          "method" => "tools/list",
-          "params" => {},
-        })
-        tools = Timeout.timeout(10) { JSON.parse(stdout.gets) }
-        names = tools.fetch("result").fetch("tools").map { |tool| tool.fetch("name") }.sort
-        assert_equal %w[history inspect publish push review], names
-      ensure
-        stdin.close unless stdin.closed?
-        unless wait_thread.join(1)
-          Process.kill("TERM", wait_thread.pid)
-          wait_thread.join
-        end
+      stdin.puts JSON.generate({
+        "jsonrpc" => "2.0",
+        "method"  => "notifications/initialized",
+      })
+      stdin.puts JSON.generate({
+        "jsonrpc" => "2.0",
+        "id"      => 2,
+        "method"  => "tools/list",
+        "params"  => {},
+      })
+      tools = Timeout.timeout(10) { JSON.parse(stdout.gets) }
+      names = tools.fetch("result").fetch("tools").map { |tool| tool.fetch("name") }.sort
+      assert_equal %w[history inspect publish push review], names
+    ensure
+      stdin.close unless stdin.closed?
+      unless wait_thread.join(1)
+        Process.kill("TERM", wait_thread.pid)
+        wait_thread.join
       end
     end
 
@@ -121,15 +118,24 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
     system git, "-C", repo, "init", "--initial-branch=main"
     system git, "-C", repo, "config", "user.name", "Homebrew Test"
     system git, "-C", repo, "config", "user.email", "brew@example.invalid"
-    (repo/"selected.txt").write "before\n"
-    (repo/"unrelated.txt").write "clean\n"
+    (repo/"selected.txt").write "before\\n"
+    (repo/"unrelated.txt").write "clean\\n"
     system git, "-C", repo, "add", "--", "selected.txt", "unrelated.txt"
     system git, "-C", repo, "commit", "-m", "seed"
 
-    (repo/"selected.txt").write "after\n"
-    (repo/"unrelated.txt").write "preserve this dirty change\n"
-    head = shell_output("#{git} -C #{repo} rev-parse HEAD").strip
-    fingerprint = Digest::SHA256.file(repo/"selected.txt").hexdigest
+    (repo/"selected.txt").write "after\\n"
+    (repo/"unrelated.txt").write "preserve this dirty change\\n"
+    head_output, head_error, head_status = Open3.capture3(
+      git, "-C", repo.to_s, "rev-parse", "HEAD"
+    )
+    assert head_status.success?, head_error
+    head = head_output.strip
+    inspected = run.call(
+      "inspect", "--json",
+      "--repo-path", repo,
+      "--file", "selected.txt"
+    )
+    fingerprint = inspected.fetch("result").fetch("changes").fetch(0).fetch("fingerprint")
     published = run.call(
       "publish", "--json",
       "--repo-path", repo,
@@ -137,12 +143,12 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
       "--message", "publish selected path",
       "--request-id", "homebrew-publish",
       "--expected-head", head,
-      "--expected-fingerprint", "selected.txt=#{fingerprint}",
+      "--expected-fingerprint", "selected.txt=#{fingerprint}"
     )
     assert published.fetch("ok")
     assert_equal ["selected.txt"], published.fetch("result").fetch("committedPaths")
     status_output, status_error, status = Open3.capture3(
-      git, "-C", repo.to_s, "status", "--porcelain=v1",
+      git, "-C", repo.to_s, "status", "--porcelain=v1"
     )
     assert status.success?, status_error
     assert_match " M unrelated.txt", status_output
@@ -158,10 +164,14 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
       "--target-ref", "refs/heads/main",
       "--request-id", "homebrew-push",
       "--expected-source-oid", commit_oid,
-      "--mode", "fast-forward",
+      "--mode", "fast-forward"
     )
     assert pushed.fetch("ok")
-    remote_oid = shell_output("#{git} --git-dir #{remote} rev-parse refs/heads/main").strip
+    remote_output, remote_error, remote_status = Open3.capture3(
+      git, "--git-dir", remote.to_s, "rev-parse", "refs/heads/main"
+    )
+    assert remote_status.success?, remote_error
+    remote_oid = remote_output.strip
     assert_equal pushed.fetch("result").fetch("newTargetOid"), remote_oid
     system git, "-C", repo, "fsck", "--strict"
     system git, "--git-dir", remote, "fsck", "--strict"

@@ -21,13 +21,14 @@ describe("Homebrew formula generation", () => {
     expect(first).toBe(second);
     expect(first).toContain("class UsableGit < Formula");
     expect(first).toContain(`url "${release.url}"`);
-    expect(first).toContain(`version "${release.version}"`);
+    expect(first).not.toContain(`version "${release.version}"`);
     expect(first).toContain(`sha256 "${release.sha256}"`);
     expect(first).toContain('license "MIT"');
     expect(first).toContain('depends_on "bun"');
     expect(first).toContain('depends_on "git"');
-    expect(first).toContain('system Formula["bun"].opt_bin/"bun", "install", "--production", "--frozen-lockfile"');
+    expect(first).toContain('system formula_opt_bin("bun")/"bun", "install", "--production", "--frozen-lockfile"');
     expect(first).toContain('libexec.install Dir["*"]');
+    expect(first).toContain('(bin/"usable-git").chmod 0755');
     expect(first).not.toContain("{{");
     expect(first.endsWith("\n")).toBeTrue();
   });
@@ -35,9 +36,13 @@ describe("Homebrew formula generation", () => {
   test("ships a substantive formula test for every required path", () => {
     const formula = generateHomebrewFormula(release);
 
-    expect(formula).toContain('"method" => "initialize"');
-    expect(formula).toContain('"method" => "tools/list"');
+    expect(formula).toMatch(/"method"\s+=> "initialize"/);
+    expect(formula).toMatch(/"method"\s+=> "tools\/list"/);
     expect(formula).toContain('assert_equal %w[history inspect publish push review]');
+    expect(formula).toContain('"inspect", "--json"');
+    expect(formula).toContain('fetch("changes").fetch(0).fetch("fingerprint")');
+    expect(formula).not.toContain("Digest::SHA256.file");
+    expect(formula).not.toContain("shell_output(");
     expect(formula).toContain('"publish", "--json"');
     expect(formula).toContain('assert_match " M unrelated.txt"');
     expect(formula).toContain('"push", "--json"');

@@ -25,17 +25,53 @@ describe("v1 read contracts", () => {
   });
 
   test("accepts structured successful envelopes", () => {
-    expect(
+    const success = {
+      version: "v1",
+      ok: true,
+      operation: "inspect",
+      requestId: "request-1",
+      repository: {
+        requestedPath: "/repo",
+        root: "/repo",
+        head: { kind: "oid", oid: "a".repeat(40) },
+        branch: "main",
+      },
+      backend: "git-cli",
+      transport: "mcp",
+      durationMs: 1,
+      gitSubprocessCount: 1,
+      warnings: [],
+      result: {},
+    } as const;
+    expect(v1EnvelopeSchema.parse(success)).toEqual(success);
+    expect(() =>
       v1EnvelopeSchema.parse({
-        version: "v1",
-        ok: true,
-        operationId: "op-1",
-        backend: "git-cli",
-        durationMs: 1,
-        gitProcessCount: 1,
-        warnings: [],
-        result: {},
-      }).ok,
-    ).toBe(true);
+        ...success,
+        error: { code: "GIT_FAILED", message: "must not coexist" },
+      }),
+    ).toThrow();
+  });
+
+  test("requires the typed error branch to agree with ok", () => {
+    const failure = {
+      version: "v1",
+      ok: false,
+      operation: "publish",
+      requestId: "request-2",
+      repository: {
+        requestedPath: "/repo",
+        root: null,
+        head: { kind: "unknown" },
+        branch: null,
+      },
+      backend: "git-cli",
+      transport: "cli",
+      durationMs: 1,
+      gitSubprocessCount: 0,
+      warnings: [],
+      error: { code: "INVALID_REPOSITORY", message: "not a repository" },
+    } as const;
+    expect(v1EnvelopeSchema.parse(failure)).toEqual(failure);
+    expect(() => v1EnvelopeSchema.parse({ ...failure, ok: true })).toThrow();
   });
 });

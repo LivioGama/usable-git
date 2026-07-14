@@ -79,6 +79,12 @@ const envelopeBase = {
   warnings: z.array(warningSchema),
 };
 
+const operationErrorSchema = z.object({
+  code: errorCodeSchema,
+  message: z.string(),
+  details: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
 export const v1EnvelopeSchema = z.discriminatedUnion("ok", [
   z.object({
     ...envelopeBase,
@@ -88,13 +94,25 @@ export const v1EnvelopeSchema = z.discriminatedUnion("ok", [
   z.object({
     ...envelopeBase,
     ok: z.literal(false),
-    error: z.object({
-      code: errorCodeSchema,
-      message: z.string(),
-      details: z.record(z.string(), z.unknown()).optional(),
-    }).strict(),
+    error: operationErrorSchema,
   }).strict(),
 ]);
+
+export const v1McpEnvelopeSchema = z.object({
+  ...envelopeBase,
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  error: operationErrorSchema.optional(),
+}).strict().superRefine((value, context) => {
+  const hasResult = Object.hasOwn(value, "result");
+  const hasError = Object.hasOwn(value, "error");
+  if (hasResult === hasError || value.ok !== hasResult) {
+    context.addIssue({
+      code: "custom",
+      message: "ok must agree with exactly one of result or error",
+    });
+  }
+});
 
 export type InspectRequest = z.infer<typeof inspectRequestSchema>;
 export type ReviewRequest = z.input<typeof reviewRequestSchema>;

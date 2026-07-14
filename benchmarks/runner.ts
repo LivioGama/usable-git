@@ -585,6 +585,23 @@ const evaluateReleaseGate = (
     reasons.push("one or more required client versions are unavailable");
   }
   if (trialsPerScenarioClient < 30) reasons.push("fewer than 30 trials per scenario/client");
+  const summariesByKey = new Map(
+    summaries.map((summary) => [
+      `${summary.client}\u0000${summary.scenario}\u0000${summary.method}`,
+      summary,
+    ]),
+  );
+  const completeRequiredMatrix = benchmarkClientIds.every((client) =>
+    benchmarkScenarios.every((scenario) =>
+      (["raw-git", "semantic"] as const).every((method) =>
+        summariesByKey.get(`${client}\u0000${scenario}\u0000${method}`)?.trials ===
+          trialsPerScenarioClient
+      )
+    )
+  );
+  if (!completeRequiredMatrix) {
+    reasons.push("benchmark matrix is missing required client/scenario/method trials");
+  }
   if (summaries.some(({ successRate, oraclePassRate }) => successRate !== 1 || oraclePassRate !== 1)) {
     reasons.push("repository correctness or success rate below 100%");
   }

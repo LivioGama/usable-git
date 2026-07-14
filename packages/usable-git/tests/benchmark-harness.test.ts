@@ -40,6 +40,26 @@ describe("paired benchmark harness", () => {
     ).rejects.toThrow("at least 30 trials");
   });
 
+  test("blocks release eligibility when the required scenario matrix is incomplete", async () => {
+    const artifact = await runBenchmarkMatrix({
+      clients: ["codex", "claude-code", "cursor", "devin"],
+      clientVersions: {
+        codex: "test-version",
+        "claude-code": "test-version",
+        cursor: "test-version",
+        devin: "test-version",
+      },
+      scenarios: [],
+      trials: 30,
+      seed: 11,
+    });
+
+    expect(artifact.releaseGate.pass).toBe(false);
+    expect(artifact.releaseGate.reasons).toContain(
+      "benchmark matrix is missing required client/scenario/method trials",
+    );
+  });
+
   test("executes paired real-client sessions and records measured adoption evidence", async () => {
     const requests: string[][] = [];
     const processRunner: BenchmarkClientProcessRunner = async (request) => {

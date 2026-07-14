@@ -69,6 +69,16 @@ describe("paired benchmark harness", () => {
                   command: "git status --porcelain=v2 --branch",
                 },
               }),
+          ...(!semantic
+            ? [JSON.stringify({
+                type: "item.completed",
+                item: {
+                  id: "raw-call-2",
+                  type: "command_execution",
+                  command: "git rev-list --walk-reflogs --count refs/stash",
+                },
+              })]
+            : []),
           JSON.stringify({
             type: "turn.completed",
             usage: semantic
@@ -94,7 +104,9 @@ describe("paired benchmark harness", () => {
     const raw = artifact.trials.find(({ method }) => method === "raw-git")!;
     const semantic = artifact.trials.find(({ method }) => method === "semantic")!;
     expect(raw.gitRelatedTokens.value).toBe(100);
-    expect(raw.rawGitToolCalls).toBe(1);
+    expect(raw.rawGitToolCalls).toBe(2);
+    expect(raw.evidenceErrors.some((error) => error.startsWith("missing expected semantic operation")))
+      .toBe(false);
     expect(semantic.gitRelatedTokens.value).toBe(40);
     expect(semantic.semanticAdopted).toBe(true);
     expect(semantic.semanticToolCalls).toBe(1);
@@ -110,12 +122,14 @@ describe("paired benchmark harness", () => {
   }, 20_000);
 
   test("blocks release eligibility when a client omits parseable token evidence", async () => {
-    const processRunner: BenchmarkClientProcessRunner = async (request) => ({
-      exitCode: 0,
-      durationMs: 10,
-      stderr: "",
-      stdout: [
-        JSON.stringify(request.args.some((argument) => argument.includes("usable-git MCP"))
+    const processRunner: BenchmarkClientProcessRunner = async (request) => {
+      const semantic = request.args.some((argument) => argument.includes("usable-git MCP"));
+      return {
+        exitCode: 0,
+        durationMs: 10,
+        stderr: "",
+        stdout: [
+          JSON.stringify(semantic
           ? {
               type: "item.completed",
               item: {
@@ -134,9 +148,20 @@ describe("paired benchmark harness", () => {
                 command: "git status --porcelain=v2 --branch",
               },
             }),
-        JSON.stringify({ type: "turn.completed" }),
-      ].join("\n"),
-    });
+          ...(!semantic
+            ? [JSON.stringify({
+                type: "item.completed",
+                item: {
+                  id: "raw-call-2",
+                  type: "command_execution",
+                  command: "git rev-list --walk-reflogs --count refs/stash",
+                },
+              })]
+            : []),
+          JSON.stringify({ type: "turn.completed" }),
+        ].join("\n"),
+      };
+    };
     const artifact = await runBenchmarkMatrix({
       clients: ["codex"],
       clientVersions: { codex: "test-version" },

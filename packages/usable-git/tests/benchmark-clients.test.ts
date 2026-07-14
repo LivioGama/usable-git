@@ -35,6 +35,9 @@ describe("real benchmark client adapters", () => {
     expect(invocations.devin.command).toBe("devin");
     expect(invocations.devin.args).toContain("--export");
     expect(invocations.devin.artifactPath).toBe("/tmp/devin-export.json");
+    expect(createClientInvocation("devin", { ...inputs, mutating: false }).args).toContain(
+      "dangerous",
+    );
     expect(Object.hasOwn(invocations.codex.env, "ANTHROPIC_API_KEY")).toBe(false);
   });
 
@@ -74,6 +77,39 @@ describe("real benchmark client adapters", () => {
     });
   });
 
+  test("accepts completed Codex tool evidence when the client hangs until timeout", async () => {
+    const runner: BenchmarkClientProcessRunner = async () => ({
+      exitCode: 124,
+      durationMs: 120_000,
+      stderr: "",
+      stdout: JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "call-timeout",
+          type: "mcp_tool_call",
+          server: "usable-git",
+          tool: "inspect",
+          status: "completed",
+          result: { metrics: { gitSubprocessCount: 2 } },
+        },
+      }),
+    });
+    const result = await runBenchmarkClientSession({
+      client: "codex",
+      repoPath: "/tmp/repo",
+      prompt: "inspect through usable-git",
+      artifactPath: "/tmp/export.json",
+      mutating: false,
+      expectedMethod: "semantic",
+      expectedSemanticOperations: ["inspect"],
+      processRunner: runner,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.semanticAdopted).toBe(true);
+    expect(result.gitRelatedTokens.value).toBeNull();
+  });
+
   test("extracts Claude raw Git calls and measured result usage without retaining commands", () => {
     const evidence = parseClientEvidence("claude-code", {
       exitCode: 0,
@@ -102,6 +138,44 @@ describe("real benchmark client adapters", () => {
     expect(evidence.gitSubprocesses).toEqual({ value: 1, source: "structured-command" });
     expect(evidence.tokenUsage?.totalTokens).toBe(100);
     expect(JSON.stringify(evidence)).not.toContain("git status");
+  });
+
+  test("correlates Claude MCP tool results with service subprocess metrics", () => {
+    const evidence = parseClientEvidence("claude-code", {
+      exitCode: 0,
+      stderr: "",
+      stdout: [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "tool-semantic",
+              name: "mcp__usable-git__inspect",
+              input: {},
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "tool-semantic",
+              content: JSON.stringify({ metrics: { gitSubprocessCount: 4 } }),
+            }],
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          usage: { input_tokens: 50, output_tokens: 10 },
+        }),
+      ].join("\n"),
+    });
+
+    expect(evidence.semanticOperations).toEqual(["inspect"]);
+    expect(evidence.gitSubprocesses).toEqual({ value: 4, source: "service-envelope" });
   });
 
   test("uses completed Cursor MCP events and fails token evidence when JSON omits usage", () => {
@@ -148,7 +222,7 @@ describe("real benchmark client adapters", () => {
             input: {},
           }],
         }],
-      }),
+      }, null, 2),
     });
     const unstructured = parseClientEvidence("devin", {
       exitCode: 0,
@@ -205,5 +279,78 @@ describe("real benchmark client adapters", () => {
     expect(result.semanticAdopted).toBe(true);
     expect(result.gitRelatedTokens.value).toBe(25);
     expect(result.gitRelatedTokens.scope).toBe("isolated-git-task-session-total");
+  });
+
+  test("requires every expected semantic operation before claiming adoption", async () => {
+    const runner: BenchmarkClientProcessRunner = async () => ({
+      exitCode: 0,
+      durationMs: 12,
+      stderr: "",
+      stdout: [
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "call-1",
+            type: "mcp_tool_call",
+            server: "usable-git",
+            tool: "inspect",
+            result: { metrics: { gitSubprocessCount: 2 } },
+          },
+        }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 20, output_tokens: 5 },
+        }),
+      ].join("\n"),
+    });
+    const result = await runBenchmarkClientSession({
+      client: "codex",
+      repoPath: "/tmp/repo",
+      prompt: "inspect then publish through usable-git",
+      artifactPath: "/tmp/export.json",
+      mutating: true,
+      expectedMethod: "semantic",
+      expectedSemanticOperations: ["inspect", "publish"],
+      processRunner: runner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.semanticAdopted).toBe(false);
+    expect(result.evidenceErrors).toContain("missing expected semantic operation: publish");
+  });
+
+  test("requires the scenario's minimum raw Git operations", async () => {
+    const runner: BenchmarkClientProcessRunner = async () => ({
+      exitCode: 0,
+      durationMs: 12,
+      stderr: "",
+      stdout: [
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "raw-call-1",
+            type: "command_execution",
+            command: "git status --porcelain=v2 --branch",
+          },
+        }),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 20, output_tokens: 5 },
+        }),
+      ].join("\n"),
+    });
+    const result = await runBenchmarkClientSession({
+      client: "codex",
+      repoPath: "/tmp/repo",
+      prompt: "run both raw Git inspection operations",
+      artifactPath: "/tmp/export.json",
+      mutating: false,
+      expectedMethod: "raw-git",
+      minimumExpectedRawGitToolCalls: 2,
+      processRunner: runner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.evidenceErrors).toContain("expected at least 2 raw Git tool calls, observed 1");
   });
 });

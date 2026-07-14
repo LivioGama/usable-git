@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { runCli as runCliCommand } from "../src/cli.ts";
+import { parseJsonRequest, runCli as runCliCommand } from "../src/cli.ts";
 import {
   commitFile,
   createRepository,
@@ -32,6 +32,43 @@ const runCli = async (args: string[], input?: unknown) => {
 };
 
 describe("usable-git JSON CLI", () => {
+  test("maps explicit JSON flags to all five v1 request shapes", () => {
+    const oid = "a".repeat(40);
+    const fingerprint = "b".repeat(64);
+    expect(parseJsonRequest("inspect", ["--json", "--repo-path", "/repo", "--file", "a.txt"]))
+      .toEqual({ repoPath: "/repo", files: ["a.txt"] });
+    expect(parseJsonRequest("review", ["--json", "--repo-path", "/repo", "--byte-cap", "2048"]))
+      .toEqual({ repoPath: "/repo", byteCap: 2048 });
+    expect(parseJsonRequest("history", ["--json", "--repo-path", "/repo", "--ref", "main", "--limit", "5"]))
+      .toEqual({ repoPath: "/repo", ref: "main", limit: 5 });
+    expect(parseJsonRequest("publish", [
+      "--json", "--repo-path", "/repo", "--file", "a.txt", "--message", "ship",
+      "--request-id", "request-1", "--expected-head", oid,
+      "--expected-fingerprint", `a.txt=${fingerprint}`,
+    ])).toEqual({
+      repoPath: "/repo",
+      files: ["a.txt"],
+      message: "ship",
+      requestId: "request-1",
+      expectedHead: { kind: "oid", oid },
+      expectedFingerprints: { "a.txt": fingerprint },
+    });
+    expect(parseJsonRequest("push", [
+      "--json", "--repo-path", "/repo", "--remote", "origin",
+      "--source-ref", "refs/heads/main", "--target-ref", "refs/heads/main",
+      "--request-id", "request-2", "--expected-source-oid", oid,
+      "--mode", "force-with-lease", "--expected-target-oid", oid,
+    ])).toEqual({
+      repoPath: "/repo",
+      remote: "origin",
+      sourceRef: "refs/heads/main",
+      targetRef: "refs/heads/main",
+      requestId: "request-2",
+      expectedSourceOid: oid,
+      mode: { kind: "force-with-lease", expectedTargetOid: oid },
+    });
+  });
+
   test("executes a real inspect request from stdin and emits one envelope", async () => {
     const repository = await createRepository();
     repositories.push(repository);

@@ -462,6 +462,26 @@ describe("publish", () => {
       await repo.run("fsck", "--strict");
     }));
 
+  test("refuses to claim an unrelated commit as interrupted publish success", async () =>
+    withTempDirectory("usable-git-publish-state-", async (stateRoot) => {
+      const repo = await repository();
+      await commitFile(repo, "selected.txt", "base\n", "initial");
+      await writeFile(repo, "selected.txt", "published\n");
+      const request = await requestFor(repo, ["selected.txt"], "recover-unrelated");
+
+      await expect(
+        publish(request, { stateRoot, runner: interruptCommitRunner(false) }),
+      ).rejects.toThrow("injected interruption before commit");
+      await repo.run("add", "--", "selected.txt");
+      await repo.run("commit", "-m", "unrelated actor commit");
+      const unrelatedHead = (await repo.run("rev-parse", "HEAD")).trim();
+
+      await expectPublishError(publish(request, { stateRoot }), "RECOVERY_CONFLICT");
+      expect((await repo.run("rev-parse", "HEAD")).trim()).toBe(unrelatedHead);
+      expect(await repo.run("rev-list", "--count", "HEAD")).toBe("2\n");
+      await repo.run("fsck", "--strict");
+    }));
+
   test("reports an observed commit when post-commit verification fails", async () =>
     withTempDirectory("usable-git-publish-state-", async (stateRoot) => {
       const repo = await repository();

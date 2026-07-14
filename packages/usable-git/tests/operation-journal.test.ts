@@ -20,8 +20,8 @@ describe("operation journal", () => {
       });
 
       expect(started.kind).toBe("started");
-      await journal.transition("request-1", "index_staged");
-      await journal.complete("request-1", { commitOid: "abc123" });
+      await journal.transition("repo-a", "request-1", "index_staged");
+      await journal.complete("repo-a", "request-1", { commitOid: "abc123" });
 
       const replay = await journal.begin({
         requestId: "request-1",
@@ -71,10 +71,76 @@ describe("operation journal", () => {
       };
       const outcomes = await Promise.all([journal.begin(input), journal.begin(input)]);
       expect(outcomes.map(({ kind }) => kind).sort()).toEqual(["resume", "started"]);
-      expect(await journal.read(input.requestId)).toMatchObject({
+      expect(await journal.read(input.repoKey, input.requestId)).toMatchObject({
         requestId: input.requestId,
         phase: "started",
       });
+    });
+  });
+
+  test("scopes the same request ID independently per repository", async () => {
+    await withTempDirectory("usable-git-journal-repos-", async (directory) => {
+      const journal = createOperationJournal({ stateRoot: join(directory, "state") });
+      const first = await journal.begin({
+        requestId: "shared-request",
+        operation: "publish",
+        repoKey: "repo-a",
+        inputHash: "input-a",
+      });
+      const second = await journal.begin({
+        requestId: "shared-request",
+        operation: "push",
+        repoKey: "repo-b",
+        inputHash: "input-b",
+      });
+
+      expect(first.kind).toBe("started");
+      expect(second.kind).toBe("started");
+      expect(await journal.read("repo-a", "shared-request")).toMatchObject({
+        repoKey: "repo-a",
+        operation: "publish",
+      });
+      expect(await journal.read("repo-b", "shared-request")).toMatchObject({
+        repoKey: "repo-b",
+        operation: "push",
+      });
+    });
+  });
+
+  test("prunes completed records by age and count without deleting active records", async () => {
+    await withTempDirectory("usable-git-journal-retention-", async (directory) => {
+      let now = Date.parse("2026-01-01T00:00:00.000Z");
+      const journal = createOperationJournal({
+        stateRoot: join(directory, "state"),
+        retentionMaxAgeMs: 1_000,
+        retentionMaxCount: 1,
+        now: () => new Date(now),
+      });
+
+      for (const requestId of ["old-terminal", "new-terminal"]) {
+        await journal.begin({
+          requestId,
+          operation: "publish",
+          repoKey: "repo-a",
+          inputHash: requestId,
+        });
+        await journal.complete("repo-a", requestId, { requestId });
+        now += 750;
+      }
+      await journal.begin({
+        requestId: "active",
+        operation: "publish",
+        repoKey: "repo-a",
+        inputHash: "active",
+      });
+      now += 750;
+
+      const result = await journal.prune();
+
+      expect(result).toEqual({ deleted: 1, retainedCompleted: 1 });
+      expect(await journal.read("repo-a", "old-terminal")).toBeNull();
+      expect(await journal.read("repo-a", "new-terminal")).not.toBeNull();
+      expect(await journal.read("repo-a", "active")).toMatchObject({ phase: "started" });
     });
   });
 });

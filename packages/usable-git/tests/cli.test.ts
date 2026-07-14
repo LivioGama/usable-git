@@ -19,8 +19,8 @@ const runCli = async (args: string[], input?: unknown) => {
     stderr: "pipe",
   });
   if (input !== undefined) {
-    child.stdin.write(JSON.stringify(input));
-    child.stdin.end();
+    child.stdin!.write(JSON.stringify(input));
+    child.stdin!.end();
   }
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,

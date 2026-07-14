@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { z } from "zod";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   historyRequestSchema,
   inspectRequestSchema,
@@ -38,38 +38,47 @@ const compactSummary = (envelope: V1Envelope) =>
     ? `${envelope.operation}: ok (${envelope.gitSubprocessCount} git subprocesses)`
     : `${envelope.operation}: ${envelope.error.code} — ${envelope.error.message}`;
 
-const toolResult = (envelope: V1Envelope) => ({
+const toolResult = (envelope: V1Envelope): CallToolResult => ({
   content: [{ type: "text" as const, text: compactSummary(envelope) }],
   structuredContent: envelope as unknown as Record<string, unknown>,
   ...(envelope.ok ? {} : { isError: true }),
 });
 
-const register = <Schema extends z.ZodType>(
-  server: McpServer,
-  operation: Operation,
-  description: string,
-  inputSchema: Schema,
-  annotations: typeof toolAnnotations.read | typeof toolAnnotations.publish | typeof toolAnnotations.push,
-) => {
-  server.registerTool(
-    operation,
-    {
-      description,
-      inputSchema,
-      outputSchema: v1McpEnvelopeSchema,
-      annotations,
-    },
-    async (input) => toolResult(await executeOperation(operation, input, { transport: "mcp" })),
-  );
-};
+const handler = (operation: Operation) => async (input: unknown): Promise<CallToolResult> =>
+  toolResult(await executeOperation(operation, input, { transport: "mcp" }));
 
 export const createMcpServer = () => {
   const server = new McpServer({ name: "usable-git", version: "0.1.0" });
-  register(server, "inspect", "Inspect one local repository snapshot without mutation or network access.", inspectRequestSchema, toolAnnotations.read);
-  register(server, "review", "Return staged and unstaged repository evidence with bounded pagination.", reviewRequestSchema, toolAnnotations.read);
-  register(server, "history", "Read bounded history from an existing local ref without fetching.", historyRequestSchema, toolAnnotations.read);
-  register(server, "publish", "Commit exactly the selected paths after optimistic state validation.", publishRequestSchema, toolAnnotations.publish);
-  register(server, "push", "Update exactly one configured remote branch with fast-forward or an exact lease.", pushRequestSchema, toolAnnotations.push);
+  server.registerTool("inspect", {
+    description: "Inspect one local repository snapshot without mutation or network access.",
+    inputSchema: inspectRequestSchema.shape,
+    outputSchema: v1McpEnvelopeSchema,
+    annotations: toolAnnotations.read,
+  }, handler("inspect"));
+  server.registerTool("review", {
+    description: "Return staged and unstaged repository evidence with bounded pagination.",
+    inputSchema: reviewRequestSchema.shape,
+    outputSchema: v1McpEnvelopeSchema,
+    annotations: toolAnnotations.read,
+  }, handler("review"));
+  server.registerTool("history", {
+    description: "Read bounded history from an existing local ref without fetching.",
+    inputSchema: historyRequestSchema.shape,
+    outputSchema: v1McpEnvelopeSchema,
+    annotations: toolAnnotations.read,
+  }, handler("history"));
+  server.registerTool("publish", {
+    description: "Commit exactly the selected paths after optimistic state validation.",
+    inputSchema: publishRequestSchema.shape,
+    outputSchema: v1McpEnvelopeSchema,
+    annotations: toolAnnotations.publish,
+  }, handler("publish"));
+  server.registerTool("push", {
+    description: "Update exactly one configured remote branch with fast-forward or an exact lease.",
+    inputSchema: pushRequestSchema.shape,
+    outputSchema: v1McpEnvelopeSchema,
+    annotations: toolAnnotations.push,
+  }, handler("push"));
   return server;
 };
 

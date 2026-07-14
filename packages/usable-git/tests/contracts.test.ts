@@ -43,7 +43,9 @@ describe("v1 read contracts", () => {
       warnings: [],
       result: {},
     } as const;
-    expect(v1EnvelopeSchema.parse(success)).toEqual(success);
+    expect(JSON.parse(JSON.stringify(v1EnvelopeSchema.parse(success)))).toEqual(
+      JSON.parse(JSON.stringify(success)),
+    );
     expect(() =>
       v1EnvelopeSchema.parse({
         ...success,
@@ -71,7 +73,9 @@ describe("v1 read contracts", () => {
       warnings: [],
       error: { code: "INVALID_REPOSITORY", message: "not a repository" },
     } as const;
-    expect(v1EnvelopeSchema.parse(failure)).toEqual(failure);
+    expect(JSON.parse(JSON.stringify(v1EnvelopeSchema.parse(failure)))).toEqual(
+      JSON.parse(JSON.stringify(failure)),
+    );
     expect(() => v1EnvelopeSchema.parse({ ...failure, ok: true })).toThrow();
   });
 });

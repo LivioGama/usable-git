@@ -606,7 +606,16 @@ export const publish = async (
           error instanceof PublishOperationError
             ? error
             : new PublishOperationError("RECOVERY_CONFLICT", String(error));
-        throw await terminalError(journal, repoKey, request.requestId, publishError);
+        const terminal = await terminalError(
+          journal,
+          repoKey,
+          request.requestId,
+          publishError,
+        );
+        if (publishError.code === "GIT_FAILED") {
+          await recoveryStore.remove(repoKey, request.requestId);
+        }
+        throw terminal;
       }
       }
     }

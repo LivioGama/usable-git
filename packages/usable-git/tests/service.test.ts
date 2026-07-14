@@ -83,4 +83,30 @@ describe("semantic operation service", () => {
       error: { code: "INVALID_INPUT" },
     });
   });
+
+  test("emits exactly one allowlisted telemetry event at the operation boundary", async () => {
+    const repo = await repository();
+    await writeFile(repo, "new.txt", "private contents\n");
+    const events: unknown[] = [];
+    await executeOperation("inspect", { repoPath: repo.path }, {
+      transport: "cli",
+      client: "codex",
+      telemetrySink: {
+        emit: async (event) => {
+          events.push(event);
+          return { written: true, repositoryHash: "a".repeat(64) };
+        },
+      },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      operation: "inspect",
+      client: "codex",
+      transport: "cli",
+      resultCode: "success",
+      repositoryIdentity: repo.path,
+    });
+    expect(JSON.stringify(events[0])).not.toContain("private contents");
+    expect(JSON.stringify(events[0])).not.toContain("new.txt");
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   benchmarkClientIds,
+  createBenchmarkClientProcessRunner,
   createClientInvocation,
   parseClientEvidence,
   runBenchmarkClientSession,
@@ -35,10 +36,28 @@ describe("real benchmark client adapters", () => {
     expect(invocations.devin.command).toBe("devin");
     expect(invocations.devin.args).toContain("--export");
     expect(invocations.devin.artifactPath).toBe("/tmp/devin-export.json");
-    expect(createClientInvocation("devin", { ...inputs, mutating: false }).args).toContain(
-      "dangerous",
-    );
+    expect(createClientInvocation("devin", { ...inputs, mutating: false }).args).toContain("auto");
+    expect(createClientInvocation("devin", {
+      ...inputs,
+      mutating: false,
+      semantic: true,
+    }).args).toContain("dangerous");
     expect(Object.hasOwn(invocations.codex.env, "ANTHROPIC_API_KEY")).toBe(false);
+  });
+
+  test("bounds captured client output and terminates the isolated process", async () => {
+    const runner = createBenchmarkClientProcessRunner({ maxOutputBytes: 64 });
+    const result = await runner({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('x'.repeat(4096)); setTimeout(() => {}, 60000)"],
+      cwd: process.cwd(),
+      env: { ...process.env } as Record<string, string>,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(125);
+    expect(result.stdout.length).toBeLessThanOrEqual(64);
+    expect(result.stdoutTruncated).toBe(true);
   });
 
   test("extracts measured Codex semantic calls, service subprocesses, and aggregate usage", () => {
@@ -108,6 +127,20 @@ describe("real benchmark client adapters", () => {
     expect(result.success).toBe(true);
     expect(result.semanticAdopted).toBe(true);
     expect(result.gitRelatedTokens.value).toBeNull();
+
+    const rawTimeout = parseClientEvidence("codex", {
+      exitCode: 124,
+      stderr: "",
+      stdout: JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "raw-timeout",
+          type: "command_execution",
+          command: "git status --porcelain=v1",
+        },
+      }),
+    });
+    expect(rawTimeout.terminalSuccess).toBe(false);
   });
 
   test("extracts Claude raw Git calls and measured result usage without retaining commands", () => {
@@ -316,10 +349,12 @@ describe("real benchmark client adapters", () => {
 
     expect(result.success).toBe(false);
     expect(result.semanticAdopted).toBe(false);
-    expect(result.evidenceErrors).toContain("missing expected semantic operation: publish");
+    expect(result.evidenceErrors).toContain(
+      "expected semantic operation sequence inspect,publish, observed inspect",
+    );
   });
 
-  test("requires the scenario's minimum raw Git operations", async () => {
+  test("requires the scenario's exact raw Git operation count", async () => {
     const runner: BenchmarkClientProcessRunner = async () => ({
       exitCode: 0,
       durationMs: 12,
@@ -346,11 +381,51 @@ describe("real benchmark client adapters", () => {
       artifactPath: "/tmp/export.json",
       mutating: false,
       expectedMethod: "raw-git",
-      minimumExpectedRawGitToolCalls: 2,
+      expectedRawGitToolCalls: 2,
       processRunner: runner,
     });
 
     expect(result.success).toBe(false);
-    expect(result.evidenceErrors).toContain("expected at least 2 raw Git tool calls, observed 1");
+    expect(result.evidenceErrors).toContain("expected exactly 2 raw Git tool calls, observed 1");
+  });
+
+  test("rejects duplicate semantic operations instead of inflating adoption", async () => {
+    const runner: BenchmarkClientProcessRunner = async () => ({
+      exitCode: 0,
+      durationMs: 12,
+      stderr: "",
+      stdout: [
+        ...["call-1", "call-2"].map((id) => JSON.stringify({
+          type: "item.completed",
+          item: {
+            id,
+            type: "mcp_tool_call",
+            server: "usable-git",
+            tool: "inspect",
+            result: { metrics: { gitSubprocessCount: 2 } },
+          },
+        })),
+        JSON.stringify({
+          type: "turn.completed",
+          usage: { input_tokens: 20, output_tokens: 5 },
+        }),
+      ].join("\n"),
+    });
+    const result = await runBenchmarkClientSession({
+      client: "codex",
+      repoPath: "/tmp/repo",
+      prompt: "inspect exactly once through usable-git",
+      artifactPath: "/tmp/export.json",
+      mutating: false,
+      expectedMethod: "semantic",
+      expectedSemanticOperations: ["inspect"],
+      processRunner: runner,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.semanticAdopted).toBe(false);
+    expect(result.evidenceErrors).toContain(
+      "expected semantic operation sequence inspect, observed inspect,inspect",
+    );
   });
 });

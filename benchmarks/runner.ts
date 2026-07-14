@@ -5,6 +5,12 @@ import { join, relative } from "node:path";
 import { inspect, type InspectResult } from "../packages/usable-git/src/operations/inspect.ts";
 import { publish } from "../packages/usable-git/src/operations/publish.ts";
 import { withGitMetrics } from "../packages/usable-git/src/git/runner.ts";
+import {
+  benchmarkClientIds,
+  runBenchmarkClientSession,
+  type BenchmarkClientId,
+  type BenchmarkClientProcessRunner,
+} from "./clients.ts";
 import { summarizeMetric, type MetricSummary } from "./statistics.ts";
 
 export const benchmarkScenarios = ["inspect-dirty", "publish-scoped"] as const;
@@ -28,8 +34,13 @@ export type BenchmarkTrial = {
   trial: number;
   seed: number;
   durationMs: number;
-  gitSubprocesses: number;
+  execution: "core-fixture" | "real-client-session";
+  gitSubprocesses: number | null;
   agentFacingOperations: number;
+  semanticAdopted: boolean | null;
+  semanticToolCalls: number | null;
+  rawGitToolCalls: number | null;
+  evidenceErrors: string[];
   success: boolean;
   outcome: string;
   initialStateHash: string;
@@ -37,7 +48,10 @@ export type BenchmarkTrial = {
   finalClean: boolean;
   gitRelatedTokens: {
     value: number | null;
-    source: "measured" | "estimated" | "unavailable";
+    source: "measured" | "unavailable";
+    scope: "isolated-git-task-session-total" | "unavailable";
+    inputTokens: number | null;
+    outputTokens: number | null;
   };
   oracle: {
     valid: boolean;
@@ -56,7 +70,9 @@ export type BenchmarkSummary = {
   oraclePassRate: number;
   finalCleanRate: number;
   durationMs: MetricSummary;
-  gitSubprocesses: MetricSummary;
+  realClientSessionRate: number;
+  semanticAdoptionRate: number | null;
+  gitSubprocesses: MetricSummary | null;
   agentFacingOperations: MetricSummary;
   gitRelatedTokens: MetricSummary | null;
 };
@@ -94,15 +110,22 @@ export type BenchmarkMatrixOptions = {
   seed: number;
   clientVersions?: Record<string, string | null>;
   allowShortRun?: boolean;
+  clientProcessRunner?: BenchmarkClientProcessRunner;
 };
 
 type Fixture = { root: string; repoPath: string; stateRoot: string };
 type MeasuredOutcome = {
   durationMs: number;
-  gitSubprocesses: number;
+  gitSubprocesses: number | null;
   agentFacingOperations: number;
   success: boolean;
   outcome: string;
+  execution?: "core-fixture" | "real-client-session";
+  semanticAdopted?: boolean;
+  semanticToolCalls?: number;
+  rawGitToolCalls?: number;
+  evidenceErrors?: string[];
+  gitRelatedTokens?: BenchmarkTrial["gitRelatedTokens"];
 };
 
 const hash = (value: string | Uint8Array) =>
@@ -338,11 +361,73 @@ const semanticPublish = async (
 };
 
 const runMethod = async (
+  client: string,
   method: BenchmarkMethod,
   scenario: BenchmarkScenario,
   fixture: Fixture,
   requestId: string,
+  clientProcessRunner?: BenchmarkClientProcessRunner,
 ) => {
+  if ((benchmarkClientIds as readonly string[]).includes(client)) {
+    const semantic = method === "semantic";
+    const task = scenario === "inspect-dirty"
+      ? semantic
+        ? [
+            "This isolated benchmark session is entirely a Git inspection task.",
+            "Use the configured usable-git MCP inspect tool exactly once on the current repository.",
+            "Do not execute shell commands and do not modify repository state.",
+          ].join(" ")
+        : [
+            "This isolated benchmark session is entirely a raw Git inspection task.",
+            "Do not use MCP or semantic repository tools.",
+            "Run git status --porcelain=v2 -z --branch --untracked-files=all and",
+            "git rev-list --walk-reflogs --count refs/stash as separate tool operations.",
+            "Do not modify repository state.",
+          ].join(" ")
+      : semantic
+        ? [
+            "This isolated benchmark session is entirely a scoped Git publish task.",
+            "Use the configured usable-git MCP inspect tool, then its publish tool.",
+            "Publish only selected.txt with message 'benchmark scoped publish'.",
+            "Pass the observed HEAD and selected.txt fingerprint as publish guards.",
+            "Do not execute shell commands and do not touch unrelated paths.",
+          ].join(" ")
+        : [
+            "This isolated benchmark session is entirely a raw scoped Git publish task.",
+            "Do not use MCP or semantic repository tools.",
+            "Inspect status, diff selected.txt, and HEAD using separate Git tool operations.",
+            "Then run git commit --only --no-status -m 'benchmark scoped publish' -- selected.txt",
+            "and inspect final status. Do not touch unrelated paths.",
+          ].join(" ");
+    const session = await runBenchmarkClientSession({
+      client: client as BenchmarkClientId,
+      repoPath: fixture.repoPath,
+      prompt: task,
+      artifactPath: join(fixture.root, `${client}-${method}-export.json`),
+      mutating: scenario === "publish-scoped",
+      expectedMethod: method,
+      expectedSemanticOperations: semantic
+        ? scenario === "inspect-dirty"
+          ? ["inspect"]
+          : ["inspect", "publish"]
+        : [],
+      expectedRawGitToolCalls: scenario === "inspect-dirty" ? 2 : 5,
+      ...(clientProcessRunner ? { processRunner: clientProcessRunner } : {}),
+    });
+    return {
+      durationMs: session.durationMs,
+      gitSubprocesses: session.gitSubprocesses.value,
+      agentFacingOperations: session.agentFacingOperations,
+      success: session.success,
+      outcome: session.outcome,
+      execution: "real-client-session" as const,
+      semanticAdopted: session.semanticAdopted,
+      semanticToolCalls: session.semanticToolCalls,
+      rawGitToolCalls: session.rawGitToolCalls,
+      evidenceErrors: session.evidenceErrors,
+      gitRelatedTokens: session.gitRelatedTokens,
+    };
+  }
   if (scenario === "inspect-dirty") {
     return method === "raw-git"
       ? rawInspect(fixture.repoPath)
@@ -358,6 +443,7 @@ const runPair = async (
   scenario: BenchmarkScenario,
   trial: number,
   seed: number,
+  clientProcessRunner?: BenchmarkClientProcessRunner,
 ): Promise<BenchmarkTrial[]> => {
   const pairId = `${client}-${scenario}-${trial}-${seed}`;
   const fixtures = {
@@ -379,10 +465,12 @@ const runPair = async (
     const measured = {} as Record<BenchmarkMethod, MeasuredOutcome>;
     for (const method of order) {
       measured[method] = await runMethod(
+        client,
         method,
         scenario,
         fixtures[method],
         `bench-${hash(pairId).slice(0, 24)}`,
+        clientProcessRunner,
       );
     }
 
@@ -405,10 +493,21 @@ const runPair = async (
       trial,
       seed,
       ...measured[method],
+      execution: measured[method].execution ?? "core-fixture",
+      semanticAdopted: measured[method].semanticAdopted ?? null,
+      semanticToolCalls: measured[method].semanticToolCalls ?? null,
+      rawGitToolCalls: measured[method].rawGitToolCalls ?? null,
+      evidenceErrors: measured[method].evidenceErrors ?? [],
       initialStateHash: initial[method].stateHash,
       finalStateHash: final[method].stateHash,
       finalClean: final[method].state.clean,
-      gitRelatedTokens: { value: null, source: "unavailable" },
+      gitRelatedTokens: measured[method].gitRelatedTokens ?? {
+        value: null,
+        source: "unavailable",
+        scope: "unavailable",
+        inputTokens: null,
+        outputTokens: null,
+      },
       oracle: {
         valid: final[method].valid,
         equivalent,
@@ -432,6 +531,9 @@ const summarize = (trials: BenchmarkTrial[], seed: number): BenchmarkSummary[] =
     const tokenValues = group.flatMap(({ gitRelatedTokens }) =>
       gitRelatedTokens.value === null ? [] : [gitRelatedTokens.value]
     );
+    const subprocessValues = group.flatMap(({ gitSubprocesses }) =>
+      gitSubprocesses === null ? [] : [gitSubprocesses]
+    );
     const summarySeed = seed + index * 7_919;
     return {
       client: first.client,
@@ -443,11 +545,16 @@ const summarize = (trials: BenchmarkTrial[], seed: number): BenchmarkSummary[] =
         group.filter(({ oracle }) => oracle.valid && oracle.equivalent && oracle.expectedStatePreserved)
           .length / group.length,
       finalCleanRate: group.filter(({ finalClean }) => finalClean).length / group.length,
+      realClientSessionRate:
+        group.filter(({ execution }) => execution === "real-client-session").length / group.length,
+      semanticAdoptionRate: first.method === "semantic" &&
+          group.some(({ execution }) => execution === "real-client-session")
+        ? group.filter(({ semanticAdopted }) => semanticAdopted === true).length / group.length
+        : null,
       durationMs: summarizeMetric(group.map(({ durationMs }) => durationMs), summarySeed),
-      gitSubprocesses: summarizeMetric(
-        group.map(({ gitSubprocesses }) => gitSubprocesses),
-        summarySeed + 1,
-      ),
+      gitSubprocesses: subprocessValues.length === group.length
+        ? summarizeMetric(subprocessValues, summarySeed + 1)
+        : null,
       agentFacingOperations: summarizeMetric(
         group.map(({ agentFacingOperations }) => agentFacingOperations),
         summarySeed + 2,
@@ -467,14 +574,33 @@ const commandOutput = async (args: string[]) => {
 const evaluateReleaseGate = (
   summaries: BenchmarkSummary[],
   trialsPerScenarioClient: number,
+  clients: string[],
+  clientVersions: Record<string, string | null>,
 ) => {
   const reasons: string[] = [];
+  if (benchmarkClientIds.some((client) => !clients.includes(client))) {
+    reasons.push("client matrix must include codex, claude-code, cursor, and devin");
+  }
+  if (benchmarkClientIds.some((client) => clientVersions[client] == null)) {
+    reasons.push("one or more required client versions are unavailable");
+  }
   if (trialsPerScenarioClient < 30) reasons.push("fewer than 30 trials per scenario/client");
   if (summaries.some(({ successRate, oraclePassRate }) => successRate !== 1 || oraclePassRate !== 1)) {
     reasons.push("repository correctness or success rate below 100%");
   }
   if (summaries.some(({ gitRelatedTokens }) => gitRelatedTokens === null)) {
     reasons.push("Git-related client token measurements unavailable");
+  }
+  if (summaries.some(({ gitSubprocesses }) => gitSubprocesses === null)) {
+    reasons.push("Git subprocess measurements unavailable");
+  }
+  if (summaries.some(({ realClientSessionRate }) => realClientSessionRate !== 1)) {
+    reasons.push("benchmark did not execute real client sessions");
+  }
+  if (summaries.some(({ method, semanticAdoptionRate }) =>
+    method === "semantic" && semanticAdoptionRate !== null && semanticAdoptionRate < 0.95
+  )) {
+    reasons.push("semantic-tool adoption below 95%");
   }
 
   const groups = new Map<string, Partial<Record<BenchmarkMethod, BenchmarkSummary>>>();
@@ -519,7 +645,13 @@ export const runBenchmarkMatrix = async (
   for (const client of options.clients) {
     for (const scenario of scenarios) {
       for (let trial = 0; trial < options.trials; trial += 1) {
-        trials.push(...await runPair(client, scenario, trial, options.seed + trial));
+        trials.push(...await runPair(
+          client,
+          scenario,
+          trial,
+          options.seed + trial,
+          options.clientProcessRunner,
+        ));
       }
     }
   }
@@ -552,6 +684,6 @@ export const runBenchmarkMatrix = async (
     },
     trials,
     summary,
-    releaseGate: evaluateReleaseGate(summary, options.trials),
+    releaseGate: evaluateReleaseGate(summary, options.trials, options.clients, clientVersions),
   };
 };

@@ -16,7 +16,7 @@ export const renderBenchmarkMarkdown = (
 ) => {
   const gate = artifact.releaseGate.pass ? "RELEASE-ELIGIBLE" : "NOT RELEASE-ELIGIBLE";
   const rows = artifact.summary.map((summary) =>
-    `| ${summary.client} | ${summary.scenario} | ${summary.method} | ${summary.trials} | ${formatPercent(summary.successRate)} | ${formatPercent(summary.oraclePassRate)} | ${formatMetric(summary.durationMs)} | ${formatNumber(summary.durationMs.p95)} [${formatNumber(summary.durationMs.p95Ci.low)}–${formatNumber(summary.durationMs.p95Ci.high)}] | ${formatNumber(summary.gitSubprocesses.median)} | ${formatNumber(summary.agentFacingOperations.median)} | ${summary.gitRelatedTokens ? formatNumber(summary.gitRelatedTokens.median) : "unavailable"} |`
+    `| ${summary.client} | ${summary.scenario} | ${summary.method} | ${summary.trials} | ${formatPercent(summary.successRate)} | ${formatPercent(summary.oraclePassRate)} | ${formatPercent(summary.realClientSessionRate)} | ${summary.semanticAdoptionRate === null ? "n/a" : formatPercent(summary.semanticAdoptionRate)} | ${formatMetric(summary.durationMs)} | ${formatNumber(summary.durationMs.p95)} [${formatNumber(summary.durationMs.p95Ci.low)}–${formatNumber(summary.durationMs.p95Ci.high)}] | ${summary.gitSubprocesses ? formatNumber(summary.gitSubprocesses.median) : "unavailable"} | ${formatNumber(summary.agentFacingOperations.median)} | ${summary.gitRelatedTokens ? formatNumber(summary.gitRelatedTokens.median) : "unavailable"} |`
   );
   const reasons = artifact.releaseGate.reasons.length === 0
     ? ["- All benchmark-specific release gates passed."]
@@ -48,8 +48,8 @@ ${clientVersions.join("\n")}
 
 ## Results
 
-| Client | Scenario | Method | Trials | Success | Oracle | Median ms (95% CI) | P95 ms (95% CI) | Git subprocesses | Agent operations | Git tokens |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Client | Scenario | Method | Trials | Success | Oracle | Real sessions | Semantic adoption | Median ms (95% CI) | P95 ms (95% CI) | Git subprocesses | Agent operations | Git tokens |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 ${rows.join("\n")}
 
 ## Release gate

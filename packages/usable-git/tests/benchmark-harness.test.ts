@@ -105,7 +105,9 @@ describe("paired benchmark harness", () => {
     const semantic = artifact.trials.find(({ method }) => method === "semantic")!;
     expect(raw.gitRelatedTokens.value).toBe(100);
     expect(raw.rawGitToolCalls).toBe(2);
-    expect(raw.evidenceErrors.some((error) => error.startsWith("missing expected semantic operation")))
+    expect(raw.evidenceErrors.some((error) =>
+      error.startsWith("expected semantic operation sequence")
+    ))
       .toBe(false);
     expect(semantic.gitRelatedTokens.value).toBe(40);
     expect(semantic.semanticAdopted).toBe(true);
@@ -216,6 +218,8 @@ describe("paired benchmark harness", () => {
 
     expect(semantic.success).toBe(false);
     expect(semantic.semanticAdopted).toBe(false);
-    expect(semantic.evidenceErrors).toContain("missing expected semantic operation: publish");
+    expect(semantic.evidenceErrors).toContain(
+      "expected semantic operation sequence inspect,publish, observed inspect",
+    );
   }, 20_000);
 });

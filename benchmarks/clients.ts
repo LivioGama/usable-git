@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 
 export const benchmarkClientIds = ["codex", "claude-code", "cursor", "devin"] as const;
 export type BenchmarkClientId = (typeof benchmarkClientIds)[number];
@@ -18,6 +18,9 @@ export type BenchmarkClientProcessResult = {
   stderr: string;
   durationMs: number;
   artifactJson?: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+  artifactTruncated?: boolean;
 };
 
 export type BenchmarkClientProcessRunner = (
@@ -35,6 +38,7 @@ export type ClientEvidence = {
   structured: boolean;
   terminalSuccess: boolean;
   semanticToolCalls: number;
+  semanticOperations: string[];
   rawGitToolCalls: number;
   agentFacingOperations: number;
   gitSubprocesses: {
@@ -56,6 +60,8 @@ export type RunBenchmarkClientSessionInput = {
   artifactPath: string;
   mutating: boolean;
   expectedMethod: "raw-git" | "semantic";
+  expectedSemanticOperations?: string[];
+  expectedRawGitToolCalls?: number;
   processRunner?: BenchmarkClientProcessRunner;
 };
 
@@ -83,12 +89,15 @@ type InvocationInput = {
   prompt: string;
   artifactPath: string;
   mutating: boolean;
+  semantic?: boolean;
 };
 
 type JsonRecord = Record<string, unknown>;
 type ParsedToolCall = {
   id: string;
+  kind: "mcp" | "command" | "other";
   semantic: boolean;
+  semanticOperation: string | null;
   rawGit: boolean;
   serviceGitSubprocesses: number | null;
   commandGitSubprocesses: number | null;
@@ -110,7 +119,7 @@ const sanitizedEnvironment = () => {
 
 export const createClientInvocation = (
   client: BenchmarkClientId,
-  { repoPath, prompt, artifactPath, mutating }: InvocationInput,
+  { repoPath, prompt, artifactPath, mutating, semantic = false }: InvocationInput,
 ): BenchmarkClientInvocation => {
   const common = {
     cwd: repoPath,
@@ -178,7 +187,7 @@ export const createClientInvocation = (
     command: "devin",
     args: [
       "--permission-mode",
-      mutating ? "dangerous" : "auto",
+      mutating || semantic ? "dangerous" : "auto",
       "--sandbox",
       "--respect-workspace-trust",
       "false",
@@ -191,37 +200,118 @@ export const createClientInvocation = (
   };
 };
 
-const defaultProcessRunner: BenchmarkClientProcessRunner = async (request) => {
+type ProcessRunnerOptions = { maxOutputBytes?: number };
+type BoundedText = { value: string; truncated: boolean };
+
+const readBoundedStream = async (
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+  onLimit: () => void,
+): Promise<BoundedText> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = limit - size;
+    if (remaining > 0) {
+      const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(chunk);
+      size += chunk.byteLength;
+    }
+    if (value.byteLength > remaining) {
+      truncated = true;
+      onLimit();
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { value: new TextDecoder().decode(bytes), truncated };
+};
+
+const readBoundedFile = async (path: string, limit: number): Promise<BoundedText | undefined> => {
+  const handle = await open(path, "r").catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const bytes = new Uint8Array(limit + 1);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.byteLength, 0);
+    return {
+      value: new TextDecoder().decode(bytes.subarray(0, Math.min(bytesRead, limit))),
+      truncated: bytesRead > limit,
+    };
+  } finally {
+    await handle.close();
+  }
+};
+
+const createProcessRunner = ({
+  maxOutputBytes = 4 * 1024 * 1024,
+}: ProcessRunnerOptions = {}): BenchmarkClientProcessRunner => async (request) => {
+  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1) {
+    throw new Error("maxOutputBytes must be a positive integer");
+  }
   const startedAt = performance.now();
   try {
     const child = Bun.spawn([request.command, ...request.args], {
       cwd: request.cwd,
+      detached: true,
       env: request.env,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
     let timedOut = false;
+    let outputLimitExceeded = false;
+    let terminated = false;
+    const terminate = () => {
+      if (terminated || child.exitCode !== null) return;
+      terminated = true;
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else {
+          process.kill(-child.pid, "SIGKILL");
+          child.kill("SIGKILL");
+        }
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      terminate();
     }, request.timeoutMs);
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
+    timeout.unref();
+    const onOutputLimit = () => {
+      outputLimitExceeded = true;
+      terminate();
+    };
+    const [stdout, stderr, rawExitCode] = await Promise.all([
+      readBoundedStream(child.stdout, maxOutputBytes, onOutputLimit),
+      readBoundedStream(child.stderr, maxOutputBytes, onOutputLimit),
       child.exited,
-    ]);
-    clearTimeout(timeout);
-    let artifactJson: string | undefined;
-    if (request.artifactPath) {
-      artifactJson = await readFile(request.artifactPath, "utf8").catch(() => undefined);
-    }
+    ]).finally(() => clearTimeout(timeout));
+    const artifact = request.artifactPath
+      ? await readBoundedFile(request.artifactPath, maxOutputBytes)
+      : undefined;
+    if (artifact?.truncated) outputLimitExceeded = true;
+    const exitCode = timedOut ? 124 : outputLimitExceeded ? 125 : rawExitCode;
     return {
-      exitCode: timedOut ? 124 : exitCode,
-      stdout,
-      stderr,
+      exitCode,
+      stdout: stdout.value,
+      stderr: stderr.value,
       durationMs: performance.now() - startedAt,
-      ...(artifactJson === undefined ? {} : { artifactJson }),
+      ...(artifact === undefined ? {} : { artifactJson: artifact.value }),
+      ...(stdout.truncated ? { stdoutTruncated: true } : {}),
+      ...(stderr.truncated ? { stderrTruncated: true } : {}),
+      ...(artifact?.truncated ? { artifactTruncated: true } : {}),
     };
   } catch (error) {
     return {
@@ -233,10 +323,20 @@ const defaultProcessRunner: BenchmarkClientProcessRunner = async (request) => {
   }
 };
 
-export const createBenchmarkClientProcessRunner = (): BenchmarkClientProcessRunner =>
-  defaultProcessRunner;
+const defaultProcessRunner = createProcessRunner();
+
+export const createBenchmarkClientProcessRunner = (
+  options: ProcessRunnerOptions = {},
+): BenchmarkClientProcessRunner => createProcessRunner(options);
 
 const parseJsonText = (text: string) => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return { records: [] as unknown[], invalid: 0 };
+  try {
+    return { records: [JSON.parse(trimmed)] as unknown[], invalid: 0 };
+  } catch {
+    // Structured clients normally emit NDJSON; Devin exports may be one pretty JSON document.
+  }
   const records: unknown[] = [];
   let invalid = 0;
   for (const line of text.split(/\r?\n/).filter((value) => value.trim().length > 0)) {
@@ -301,12 +401,12 @@ const tokenUsageFrom = (
   return candidates.at(-1) ?? null;
 };
 
-const semanticTool = (value: unknown) => {
+const semanticOperation = (value: unknown) => {
   const joined = stringsWithin(value).join("\n");
-  return /(?:mcp__|server[\s:/_-]*)?usable-git(?:__|[\s:/_-]+)(inspect|review|history|publish|push)\b/i
-    .test(joined) || (
-      /usable-git/i.test(joined) && /\b(inspect|review|history|publish|push)\b/i.test(joined)
-    );
+  if (!/usable-git/i.test(joined)) return null;
+  return ["inspect", "review", "history", "publish", "push"]
+    .find((operation) => new RegExp(`(?:^|[^a-z])${operation}(?:[^a-z]|$)`, "i").test(joined)) ??
+    null;
 };
 
 const rawGitCommandCount = (command: unknown) => {
@@ -315,7 +415,15 @@ const rawGitCommandCount = (command: unknown) => {
 };
 
 const numericMetric = (value: unknown) => {
-  const values = valuesForKey(value, "gitSubprocessCount").flatMap((entry) => {
+  let structured = value;
+  if (typeof value === "string") {
+    try {
+      structured = JSON.parse(value);
+    } catch {
+      structured = null;
+    }
+  }
+  const values = valuesForKey(structured, "gitSubprocessCount").flatMap((entry) => {
     const metric = finiteToken(entry);
     return metric === null ? [] : [metric];
   });
@@ -327,14 +435,18 @@ const toolFrom = (
   name: unknown,
   input: unknown,
   result: unknown,
+  kind: ParsedToolCall["kind"] = "other",
 ): ParsedToolCall => {
   const command = isRecord(input)
     ? input.command ?? input.cmd
     : valuesForKey(input, "command")[0] ?? valuesForKey(input, "cmd")[0];
   const gitCommands = rawGitCommandCount(command);
+  const operation = semanticOperation({ name, input });
   return {
     id: typeof id === "string" ? id : `anonymous-${String(name)}`,
-    semantic: semanticTool({ name, input }),
+    kind,
+    semantic: operation !== null,
+    semanticOperation: operation,
     rawGit: gitCommands > 0,
     serviceGitSubprocesses: numericMetric(result),
     commandGitSubprocesses: gitCommands > 0 ? gitCommands : null,
@@ -350,25 +462,41 @@ const codexCalls = (records: unknown[]) => records.flatMap((record) => {
       `${String(item.server ?? "")}__${String(item.tool ?? item.name ?? "")}`,
       item.arguments ?? item.input,
       item.result,
+      "mcp",
     )];
   }
   if (item.type === "command_execution") {
-    return [toolFrom(item.id, "command_execution", { command: item.command }, item)];
+    return [toolFrom(item.id, "command_execution", { command: item.command }, item, "command")];
   }
   return [];
 });
 
-const contentToolCalls = (value: unknown) => valuesForKey(value, "content")
+const contentToolCalls = (
+  value: unknown,
+  resultsById = new Map<string, unknown>(),
+) => valuesForKey(value, "content")
   .flatMap((content) => Array.isArray(content) ? content : [])
   .flatMap((entry) => {
     if (!isRecord(entry) || entry.type !== "tool_use") return [];
-    return [toolFrom(entry.id, entry.name, entry.input, entry.result)];
+    const correlated = typeof entry.id === "string" ? resultsById.get(entry.id) : undefined;
+    return [toolFrom(entry.id, entry.name, entry.input, correlated ?? entry.result)];
   });
 
-const claudeCalls = (records: unknown[]) => records.flatMap((record) => {
+const claudeCalls = (records: unknown[]) => {
+  const resultsById = new Map<string, unknown>();
+  for (const result of valuesForKey(records, "content").flatMap((content) =>
+    Array.isArray(content) ? content : []
+  )) {
+    if (
+      isRecord(result) && result.type === "tool_result" &&
+      typeof result.tool_use_id === "string"
+    ) resultsById.set(result.tool_use_id, result.content);
+  }
+  return records.flatMap((record) => {
   if (!isRecord(record) || record.type !== "assistant") return [];
-  return contentToolCalls(record.message);
-});
+    return contentToolCalls(record.message, resultsById);
+  });
+};
 
 const cursorCalls = (records: unknown[]) => records.flatMap((record) => {
   if (
@@ -418,6 +546,9 @@ export const parseClientEvidence = (
         : devinCalls(records);
   const uniqueCalls = [...new Map(calls.map((call) => [call.id, call])).values()];
   const semanticToolCalls = uniqueCalls.filter(({ semantic }) => semantic).length;
+  const semanticOperations = uniqueCalls.flatMap(({ semanticOperation }) =>
+    semanticOperation === null ? [] : [semanticOperation]
+  );
   const rawGitToolCalls = uniqueCalls.filter(({ rawGit }) => rawGit).length;
   const serviceCounts = uniqueCalls.flatMap(({ serviceGitSubprocesses }) =>
     serviceGitSubprocesses === null ? [] : [serviceGitSubprocesses]
@@ -436,7 +567,10 @@ export const parseClientEvidence = (
         : { value: null, source: "unavailable" as const };
   const structured = records.length > 0;
   const tokenUsage = tokenUsageFrom(client, records);
-  const terminalSuccess = result.exitCode === 0 && terminalSucceeded(client, records);
+  const completedCodexTimeout = client === "codex" && result.exitCode === 124 &&
+    uniqueCalls.some(({ kind }) => kind === "mcp");
+  const terminalSuccess = (result.exitCode === 0 && terminalSucceeded(client, records)) ||
+    completedCodexTimeout;
   const errors = [
     ...(!structured ? ["no parseable structured client evidence"] : []),
     ...(tokenUsage === null ? ["client JSON did not expose complete token usage"] : []),
@@ -447,6 +581,7 @@ export const parseClientEvidence = (
     structured,
     terminalSuccess,
     semanticToolCalls,
+    semanticOperations,
     rawGitToolCalls,
     agentFacingOperations: uniqueCalls.length,
     gitSubprocesses,
@@ -462,6 +597,8 @@ export const runBenchmarkClientSession = async ({
   artifactPath,
   mutating,
   expectedMethod,
+  expectedSemanticOperations = [],
+  expectedRawGitToolCalls = 1,
   processRunner = defaultProcessRunner,
 }: RunBenchmarkClientSessionInput): Promise<BenchmarkClientSessionResult> => {
   const processResult = await processRunner(createClientInvocation(client, {
@@ -469,12 +606,19 @@ export const runBenchmarkClientSession = async ({
     prompt,
     artifactPath,
     mutating,
+    semantic: expectedMethod === "semantic",
   }));
   const evidence = parseClientEvidence(client, processResult);
-  const semanticAdopted = evidence.semanticToolCalls > 0 && evidence.rawGitToolCalls === 0;
+  const semanticSequenceMatches =
+    evidence.semanticOperations.length === expectedSemanticOperations.length &&
+    evidence.semanticOperations.every((operation, index) =>
+      operation === expectedSemanticOperations[index]
+    );
+  const semanticAdopted = evidence.semanticToolCalls > 0 && evidence.rawGitToolCalls === 0 &&
+    (expectedSemanticOperations.length === 0 || semanticSequenceMatches);
   const expectedToolsObserved = expectedMethod === "semantic"
     ? semanticAdopted
-    : evidence.rawGitToolCalls > 0 && evidence.semanticToolCalls === 0;
+    : evidence.rawGitToolCalls === expectedRawGitToolCalls && evidence.semanticToolCalls === 0;
   const success = evidence.terminalSuccess && expectedToolsObserved;
   return {
     durationMs: processResult.durationMs,
@@ -492,6 +636,20 @@ export const runBenchmarkClientSession = async ({
       inputTokens: evidence.tokenUsage?.inputTokens ?? null,
       outputTokens: evidence.tokenUsage?.outputTokens ?? null,
     },
-    evidenceErrors: evidence.errors,
+    evidenceErrors: [
+      ...evidence.errors,
+      ...(expectedMethod === "semantic" && expectedSemanticOperations.length > 0 &&
+          !semanticSequenceMatches
+        ? [
+            `expected semantic operation sequence ${expectedSemanticOperations.join(",")}, observed ${evidence.semanticOperations.join(",") || "none"}`,
+          ]
+        : []),
+      ...(expectedMethod === "raw-git" &&
+          evidence.rawGitToolCalls !== expectedRawGitToolCalls
+        ? [
+            `expected exactly ${expectedRawGitToolCalls} raw Git tool calls, observed ${evidence.rawGitToolCalls}`,
+          ]
+        : []),
+    ],
   };
 };

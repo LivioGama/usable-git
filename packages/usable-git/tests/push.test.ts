@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,7 +111,11 @@ describe("push", () => {
     ]);
     expect(await runGit(fixture.remote, "rev-parse", "refs/heads/main")).toBe(sourceOid);
     expect(await runGit(fixture.remote, "rev-parse", "refs/heads/other")).toBe(otherBefore);
+    const repoKey = createHash("sha256")
+      .update(await realpath(join(fixture.local, ".git")))
+      .digest("hex");
     const journal = await createOperationJournal({ stateRoot: fixture.stateRoot }).read(
+      repoKey,
       request.requestId,
     );
     expect(journal?.inputHash).toMatch(/^[a-f0-9]{64}$/);

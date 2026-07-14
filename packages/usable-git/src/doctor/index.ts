@@ -474,8 +474,8 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
     : client === "claude"
       ? ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", prompt]
       : client === "devin"
-        ? ["--permission-mode", "auto", "-p", prompt]
-        : ["-p", prompt];
+        ? ["--permission-mode", "dangerous", "-p", prompt]
+        : ["-p", "--trust", "--approve-mcps", prompt];
   const result = await processRunner({
     command,
     args,

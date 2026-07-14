@@ -283,6 +283,7 @@ const classifyCommitFailure = (
 
 const terminalError = async (
   journal: ReturnType<typeof createOperationJournal>,
+  repoKey: string,
   requestId: string,
   error: PublishOperationError,
 ) => {
@@ -294,7 +295,7 @@ const terminalError = async (
       ...(error.details ? { details: error.details } : {}),
     },
   };
-  await journal.complete(requestId, outcome);
+  await journal.complete(repoKey, requestId, outcome);
   return error;
 };
 
@@ -329,6 +330,62 @@ const changedPaths = async (
     commitOid,
   ]);
   return result.stdout.split("\0").filter(Boolean).sort();
+};
+
+const verifyRecoveredCommit = async (
+  request: PublishRequest,
+  recovery: PublishRecoveryState,
+  commitOid: string,
+  root: string,
+  runner: GitRunner,
+) => {
+  if (recovery.phase !== "commit_started") {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "HEAD changed before the interrupted publish reached commit execution",
+    );
+  }
+
+  const ancestry = await runner.runChecked(root, [
+    "rev-list",
+    "--parents",
+    "-n",
+    "1",
+    commitOid,
+  ]);
+  const [observedCommit, ...parents] = ancestry.stdout.trim().split(/\s+/);
+  const expectedParents = recovery.preHead ? [recovery.preHead] : [];
+  if (
+    observedCommit !== commitOid ||
+    JSON.stringify(parents) !== JSON.stringify(expectedParents)
+  ) {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "Observed HEAD is not the exact child expected from interrupted publish",
+    );
+  }
+
+  const committed = await changedPaths(root, commitOid, runner);
+  const expectedPaths = [...request.files].sort();
+  if (JSON.stringify(committed) !== JSON.stringify(expectedPaths)) {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "Observed commit paths do not match interrupted publish scope",
+    );
+  }
+
+  const message = await runner.runChecked(root, [
+    "show",
+    "-s",
+    "--format=%B",
+    commitOid,
+  ]);
+  if (message.stdout.trimEnd() !== request.message.trimEnd()) {
+    throw new PublishOperationError(
+      "RECOVERY_CONFLICT",
+      "Observed commit message does not match interrupted publish input",
+    );
+  }
 };
 
 const statusForResult = (snapshot: InspectResult) => ({
@@ -425,6 +482,7 @@ const recoverInterruptedPublish = async (
 
   const head = await currentHead(root, runner);
   if (head !== recovery.preHead && head !== null) {
+    await verifyRecoveredCommit(request, recovery, head, root, runner);
     const result = await finishObservedCommit(request, head, null, runner, [
       "Recovered a commit observed after an interrupted publish",
     ]);
@@ -505,7 +563,7 @@ export const publish = async (
   } catch (error) {
     if (error instanceof RepositoryBusyError) {
       const publishError = new PublishOperationError("BUSY_REPOSITORY", error.message);
-      throw await terminalError(journal, request.requestId, publishError);
+      throw await terminalError(journal, repoKey, request.requestId, publishError);
     }
     throw error;
   }
@@ -516,21 +574,30 @@ export const publish = async (
       try {
         const recovered = await recoverInterruptedPublish(
           request,
-          await recoveryStore.read(request.requestId),
+          await recoveryStore.read({
+            requestId: request.requestId,
+            repoKey,
+            inputHash,
+            preHead:
+              request.expectedHead.kind === "oid"
+                ? request.expectedHead.oid
+                : null,
+            files: request.files,
+          }),
           repository.root,
           indexPath,
           runner,
         );
         const outcome: SerializedOutcome = recovered;
-        await journal.complete(request.requestId, outcome);
-        await recoveryStore.remove(request.requestId);
+        await journal.complete(repoKey, request.requestId, outcome);
+        await recoveryStore.remove(repoKey, request.requestId);
         return recovered.result;
       } catch (error) {
         const publishError =
           error instanceof PublishOperationError
             ? error
             : new PublishOperationError("RECOVERY_CONFLICT", String(error));
-        throw await terminalError(journal, request.requestId, publishError);
+        throw await terminalError(journal, repoKey, request.requestId, publishError);
       }
     }
 
@@ -542,7 +609,7 @@ export const publish = async (
         "INVALID_PATH",
         error instanceof Error ? error.message : "Invalid publish path",
       );
-      throw await terminalError(journal, request.requestId, publishError);
+      throw await terminalError(journal, repoKey, request.requestId, publishError);
     }
 
     let before: InspectResult;
@@ -559,7 +626,7 @@ export const publish = async (
         error instanceof PublishOperationError
           ? error
           : new PublishOperationError("INVALID_PATH", String(error));
-      throw await terminalError(journal, request.requestId, publishError);
+      throw await terminalError(journal, repoKey, request.requestId, publishError);
     }
 
     const snapshot = await captureIndexSnapshot(indexPath);
@@ -606,14 +673,14 @@ export const publish = async (
             "RECOVERY_CONFLICT",
             "Index changed after intent-to-add failed; recovery refused to overwrite it",
           );
-          throw await terminalError(journal, request.requestId, error);
+          throw await terminalError(journal, repoKey, request.requestId, error);
         }
-        await recoveryStore.remove(request.requestId);
+        await recoveryStore.remove(repoKey, request.requestId);
         const error = new PublishOperationError("GIT_FAILED", "Git intent-to-add failed", {
           exitCode: staged.exitCode,
           diagnostic: staged.stderr.slice(0, 4_096),
         });
-        throw await terminalError(journal, request.requestId, error);
+        throw await terminalError(journal, repoKey, request.requestId, error);
       }
     }
 
@@ -623,7 +690,7 @@ export const publish = async (
       ownedIndexChecksum: await indexChecksum(indexPath),
     };
     await recoveryStore.write(recovery);
-    await journal.transition(request.requestId, "index_staged");
+    await journal.transition(repoKey, request.requestId, "index_staged");
     recovery = { ...recovery, phase: "commit_started" };
     await recoveryStore.write(recovery);
 
@@ -645,7 +712,7 @@ export const publish = async (
           ? []
           : [`Git exited ${commit.exitCode}, but commit ${observedHead} was observed`];
       try {
-        await journal.transition(request.requestId, "commit_observed");
+        await journal.transition(repoKey, request.requestId, "commit_observed");
       } catch (error) {
         observedWarnings.push(
           `Commit was observed but journal transition failed: ${error instanceof Error ? error.message : String(error)}`.slice(
@@ -663,7 +730,7 @@ export const publish = async (
       );
       const outcome: SerializedOutcome = { kind: "success", result };
       try {
-        await journal.complete(request.requestId, outcome);
+        await journal.complete(repoKey, request.requestId, outcome);
       } catch (error) {
         result.warnings.push(
           `Commit was observed but terminal journal write failed: ${error instanceof Error ? error.message : String(error)}`.slice(
@@ -673,7 +740,7 @@ export const publish = async (
         );
       }
       try {
-        await recoveryStore.remove(request.requestId);
+        await recoveryStore.remove(repoKey, request.requestId);
       } catch (error) {
         result.warnings.push(
           `Commit was observed but recovery cleanup failed: ${error instanceof Error ? error.message : String(error)}`.slice(
@@ -695,11 +762,12 @@ export const publish = async (
         "RECOVERY_CONFLICT",
         "Index changed during failed publish; recovery refused to overwrite it",
       );
-      throw await terminalError(journal, request.requestId, error);
+      throw await terminalError(journal, repoKey, request.requestId, error);
     }
-    await recoveryStore.remove(request.requestId);
+    await recoveryStore.remove(repoKey, request.requestId);
     throw await terminalError(
       journal,
+      repoKey,
       request.requestId,
       classifyCommitFailure(commit, activeCommitHook),
     );

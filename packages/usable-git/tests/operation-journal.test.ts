@@ -59,4 +59,22 @@ describe("operation journal", () => {
       ).rejects.toBeInstanceOf(IdempotencyConflictError);
     });
   });
+
+  test("creates a request atomically under concurrent begin calls", async () => {
+    await withTempDirectory("usable-git-journal-race-", async (directory) => {
+      const journal = createOperationJournal({ stateRoot: join(directory, "state") });
+      const input = {
+        requestId: "request-race",
+        operation: "publish" as const,
+        repoKey: "repo-a",
+        inputHash: "input-a",
+      };
+      const outcomes = await Promise.all([journal.begin(input), journal.begin(input)]);
+      expect(outcomes.map(({ kind }) => kind).sort()).toEqual(["resume", "started"]);
+      expect(await journal.read(input.requestId)).toMatchObject({
+        requestId: input.requestId,
+        phase: "started",
+      });
+    });
+  });
 });

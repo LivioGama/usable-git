@@ -36,7 +36,7 @@ export const publishRequestSchema = z
   .object({
     repoPath: z.string().min(1).refine(isAbsolute, "repoPath must be absolute"),
     files: z.array(literalPublishFileSchema).min(1).max(10_000),
-    message: z.string().trim().min(1).max(65_536),
+    message: z.string().max(65_536).refine((value) => value.trim().length > 0, "message must not be blank"),
     requestId: requestIdSchema,
     expectedHead: expectedHeadSchema,
     expectedFingerprints: z.record(z.string(), fingerprintSchema),

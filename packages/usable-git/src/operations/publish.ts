@@ -7,6 +7,7 @@ import {
   type PublishRequest,
 } from "../contracts/v1/publish.ts";
 import type { ErrorCode } from "../contracts/v1.ts";
+import { UsableGitError } from "../errors.ts";
 import { validateLiteralFiles } from "../git/paths.ts";
 import { discoverRepository } from "../git/repository.ts";
 import { git, type GitRunResult, type GitRunner } from "../git/runner.ts";
@@ -48,19 +49,14 @@ export type PublishResult = {
   warnings: string[];
 };
 
-export class PublishOperationError extends Error {
-  readonly code: ErrorCode;
-  readonly details?: Record<string, unknown>;
-
+export class PublishOperationError extends UsableGitError {
   constructor(
     code: ErrorCode,
     message: string,
     details?: Record<string, unknown>,
   ) {
-    super(message);
+    super(code, message, details);
     this.name = "PublishOperationError";
-    this.code = code;
-    this.details = details;
   }
 }
 

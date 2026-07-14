@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { discoverRepository } from "../src/git/repository.ts";
 import { createGitRunner, withGitMetrics } from "../src/git/runner.ts";
@@ -150,6 +151,21 @@ describe("Git primitives", () => {
       await expect(
         validateLiteralFiles(repository.path, ["line\nbreak.txt", "line\nbreak.txt"]),
       ).rejects.toThrow(/duplicate/i);
+    } finally {
+      await repository.cleanup();
+    }
+  });
+
+  test("accepts an exact path whose deletion is already staged", async () => {
+    const repository = await createRepository();
+    try {
+      await commitFile(repository, "deleted.txt", "before\n", "baseline");
+      await rm(join(repository.path, "deleted.txt"));
+      await repository.git("add", "--", "deleted.txt");
+
+      expect(await validateLiteralFiles(repository.path, ["deleted.txt"])).toEqual([
+        "deleted.txt",
+      ]);
     } finally {
       await repository.cleanup();
     }

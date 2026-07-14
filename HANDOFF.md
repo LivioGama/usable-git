@@ -1,0 +1,148 @@
+# usable-git implementation handoff
+
+## Status
+
+Implementation is complete through the v1 release-candidate stage. The five semantic
+operations, CLI/MCP transports, guarded mutation recovery, client installation and
+diagnostics, telemetry ingestion, property/crash coverage, paired benchmark harness,
+and Homebrew release tooling are present.
+
+This is **not yet a public v1 release**. The source branch can be pushed, but no v1 tag,
+GitHub release, or public Homebrew formula should be published until the real-agent
+benchmark gate passes.
+
+Implementation baseline before this handoff: `a5e72b4ed56cca527bcee92c50b5f759b2cd334a`
+on `main`.
+
+## Verified evidence
+
+| Area | Observed result |
+|---|---|
+| Full remote test suite | Session-observed: 207 tests, 899 assertions, 0 failures; newer log was not persisted |
+| TypeScript | `bun run typecheck` completed cleanly |
+| Property coverage | 1,000 randomized cases passed |
+| Crash recovery | 46 crash cases passed |
+| macOS Homebrew candidate | Source archive audit, reinstall, formula test, and real MCP/publish/push paths passed |
+| Linux Homebrew candidate | Source archive audit, reinstall, formula test, and real MCP/publish/push paths passed |
+| Client activation | Session-observed: Codex, Claude Code, Cursor Agent, and Devin CLI doctors passed; combined result 14/14 |
+| Installed executable | Stable path observed at `/opt/homebrew/bin/usable-git` |
+| Source archive | SHA-256 `c4d154dc0b102bb8cc39b807a442b51211d971446090340d614a10d66303ae56` for baseline HEAD |
+| Global routing rule | Deployed and pushed in `LivioGama/agent-config` commit `bd7b284e52cf70b2c31bd792c413ecf9e8979347` |
+
+Final Linux Homebrew logs from the baseline run:
+
+- `/tmp/usable-git-a5e72b4-reinstall.log`
+- `/tmp/usable-git-a5e72b4-test.log`
+
+The README deliberately labels historical prototype timings as unverified. Do not cite
+them as v1 performance evidence.
+
+## Remaining release work
+
+### 1. Authenticate Cursor on the remote benchmark host
+
+Target host: `exodus`.
+
+Codex, Claude Code, and Devin were authenticated there. Cursor Agent was installed but
+`cursor-agent status` returned `Not logged in`. Complete Cursor's interactive login in a
+separate terminal pane, then confirm status. Never commit credentials or tokens.
+
+```sh
+rtk ssh exodus
+rtk cursor-agent login
+rtk cursor-agent status
+```
+
+### 2. Prepare the exact pushed revision on `exodus`
+
+Use the same commit for every trial. Install locked dependencies with Bun. Record exact
+versions for Bun, Git, Codex, Claude Code, Cursor Agent, and Devin in the benchmark
+invocation/artifact.
+
+Do not run this release-sized job on the Mac. It exceeds the local compute limit.
+
+### 3. Run the real-agent paired benchmark matrix
+
+Required matrix:
+
+- 4 clients: Codex, Claude Code, Cursor Agent, Devin
+- 2 scenarios: `inspect-dirty`, `publish-scoped`
+- 30 paired trials per client/scenario
+- 240 paired trials; 480 fresh client sessions total
+- fixed seed: `20260714`
+
+From the checked-out pushed revision on `exodus`:
+
+```sh
+rtk bun benchmarks/run.ts \
+  --clients codex,claude-code,cursor,devin \
+  --client-version codex=<exact-version> \
+  --client-version claude-code=<exact-version> \
+  --client-version cursor=<exact-version> \
+  --client-version devin=<exact-version> \
+  --trials 30 \
+  --seed 20260714 \
+  --output benchmarks/results
+```
+
+Keep both generated raw JSON and Markdown report. Commit them only if the artifact contains
+the complete matrix and real structured evidence. Do not substitute the short `harness`
+fixture for release evidence.
+
+### 4. Evaluate every release gate
+
+All gates must pass together:
+
+- 100% repository correctness, final-state oracle success, and recovery
+- zero unrelated-work loss or corruption
+- 100% clean-install activation across all four clients
+- at least 95% semantic-tool adoption when applicable
+- at least 50% fewer agent-facing Git operations
+- at least 30% lower Git-related tokens
+- at least 30% lower p95 end-to-end time
+- measured tokens available for every required client/version
+- paired artifact includes trial counts, environment/component versions, tested commit SHA,
+  medians, p95 values, confidence intervals, subprocess counts, and final-state oracles
+
+Any missing/unparseable usage data or incomplete client matrix is a release-gate failure,
+not a result to estimate around.
+
+### 5. Publish only after a passing artifact
+
+If every gate passes:
+
+1. Commit the raw benchmark JSON and generated Markdown report.
+2. Re-run the repository verification suite against that exact commit.
+3. Generate and validate `Formula/usable-git.rb` through
+   `packaging/homebrew/prepare-release.ts` and the existing Homebrew tests.
+4. Update `LivioGama/homebrew-tap` only after checksum and macOS/Linux formula gates pass.
+5. Create the v1 tag and GitHub release from the same verified commit.
+6. Confirm clean installation and all four client doctors from the public formula.
+
+If a gate fails, keep the candidate unreleased, preserve the raw artifact, fix the measured
+cause, and rerun the complete matrix. Do not publish a partial result.
+
+## Safety and workspace notes
+
+The following pre-existing untracked files are personal/tool configuration, not v1 source
+artifacts. Preserve them locally and do not add them to the public repository:
+
+- `.cursor/rules/use-bun-instead-of-node-vite-npm-pnpm.mdc`
+- `AGENTS.md`
+- `CLAUDE.md`
+
+Use `usable-git inspect`, `review`, `history`, `publish`, and `push` for their supported
+operations. A semantic safety rejection is terminal; never bypass it with broader raw Git.
+Keep history linear.
+
+Some older `/tmp` suite and standalone doctor artifacts predate the final fixes and show
+stale failures or executable paths. Do not use them as final proof. The Linux Homebrew
+logs named above and the exact source archive hash are tied to the baseline commit.
+
+## Primary references
+
+- `README.md`
+- `benchmarks/README.md`
+- `specs/usable-git-v1/PRODUCT.md`
+- `specs/usable-git-v1/TECH.md`
+- `packaging/homebrew/prepare-release.ts`

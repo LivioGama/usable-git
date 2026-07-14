@@ -39,6 +39,35 @@ describe("Git primitives", () => {
     }
   });
 
+  test("removes inherited Git config injection variables", async () => {
+    const repository = await createRepository();
+    const previous = {
+      count: process.env.GIT_CONFIG_COUNT,
+      key: process.env.GIT_CONFIG_KEY_0,
+      value: process.env.GIT_CONFIG_VALUE_0,
+    };
+    try {
+      process.env.GIT_CONFIG_COUNT = "1";
+      process.env.GIT_CONFIG_KEY_0 = "usable-git.injected";
+      process.env.GIT_CONFIG_VALUE_0 = "secret";
+      const result = await createGitRunner().run(repository.path, [
+        "config",
+        "--get",
+        "usable-git.injected",
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+    } finally {
+      if (previous.count === undefined) delete process.env.GIT_CONFIG_COUNT;
+      else process.env.GIT_CONFIG_COUNT = previous.count;
+      if (previous.key === undefined) delete process.env.GIT_CONFIG_KEY_0;
+      else process.env.GIT_CONFIG_KEY_0 = previous.key;
+      if (previous.value === undefined) delete process.env.GIT_CONFIG_VALUE_0;
+      else process.env.GIT_CONFIG_VALUE_0 = previous.value;
+      await repository.cleanup();
+    }
+  });
+
   test("discovers the worktree and common Git directory", async () => {
     const repository = await createRepository();
     try {

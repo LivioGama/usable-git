@@ -541,7 +541,7 @@ export const createDoctorClientInvoker = (): DoctorClientInvoker => async ({
   }
 
   const prompt = [
-    "Use the configured MCP semantic repository inspect tool exactly once on the current repository.",
+    `Call the configured MCP tool usable-git.inspect exactly once with arguments ${JSON.stringify({ repoPath })}.`,
     "Do not execute shell commands. Return only the operation name and success state.",
   ].join(" ");
   const devinExportPath = client === "devin"

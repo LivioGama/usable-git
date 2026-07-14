@@ -244,7 +244,7 @@ describe("runDoctor", () => {
     expect(invocation?.args.filter((arg) => arg.startsWith("mcp_servers."))).toHaveLength(2);
     expect(invocation?.args.at(-1)).toBe("-");
     expect(invocation?.stdin).toBe(
-      "Use the configured MCP semantic repository inspect tool exactly once on the current repository. " +
+      'Call the configured MCP tool usable-git.inspect exactly once with arguments {"repoPath":"/tmp/repository"}. ' +
       "Do not execute shell commands. Return only the operation name and success state.",
     );
     expect(invocation?.args).not.toContain(invocation?.stdin);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp.ts";
+import type { TelemetryEventInput } from "../src/contracts/v1/telemetry.ts";
 import {
   createRepository,
   type TestRepository,
@@ -73,6 +74,39 @@ describe("usable-git MCP server", () => {
       expect(response.content).toEqual([
         expect.objectContaining({ type: "text", text: expect.stringContaining("inspect: ok") }),
       ]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  test("attributes telemetry to the connected client implementation", async () => {
+    const repository = await createRepository();
+    repositories.push(repository);
+    const events: TelemetryEventInput[] = [];
+    const server = createMcpServer({
+      telemetrySink: {
+        emit: async (event) => {
+          events.push(event);
+          return { written: false, reason: "disabled" };
+        },
+      },
+    });
+    const client = new Client({ name: "codex-mcp", version: "0.114.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({
+        name: "inspect",
+        arguments: { repoPath: repository.path },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        client: "codex",
+        transport: "mcp",
+        components: { client: "0.114.0" },
+      });
     } finally {
       await client.close();
       await server.close();

@@ -37,6 +37,35 @@ describe("operation journal", () => {
     });
   });
 
+  test("durably attaches recovery metadata to a nonterminal transition", async () => {
+    await withTempDirectory("usable-git-journal-checkpoint-", async (directory) => {
+      const journal = createOperationJournal({ stateRoot: join(directory, "state") });
+      await journal.begin({
+        requestId: "push-checkpoint",
+        operation: "push",
+        repoKey: "repo-a",
+        inputHash: "input-a",
+      });
+      const checkpoint = {
+        schemaVersion: 1,
+        sourceOid: "a".repeat(40),
+        oldTargetOid: "b".repeat(40),
+      };
+
+      await journal.transition(
+        "repo-a",
+        "push-checkpoint",
+        "push_started",
+        checkpoint,
+      );
+
+      expect(await journal.read("repo-a", "push-checkpoint")).toMatchObject({
+        phase: "push_started",
+        result: checkpoint,
+      });
+    });
+  });
+
   test("rejects request ID reuse with different canonical input", async () => {
     await withTempDirectory("usable-git-journal-conflict-", async (directory) => {
       const journal = createOperationJournal({

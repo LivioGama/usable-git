@@ -77,7 +77,9 @@ describe("Homebrew formula generation", () => {
     await writeHomebrewFormula({ ...release, outputPath: path });
     expect(await readFile(path, "utf8")).toBe(generateHomebrewFormula(release));
 
-    const syntax = Bun.spawnSync(["ruby", "-c", path], { stdout: "pipe", stderr: "pipe" });
+    const ruby = Bun.which("ruby");
+    if (!ruby) return;
+    const syntax = Bun.spawnSync([ruby, "-c", path], { stdout: "pipe", stderr: "pipe" });
     expect(syntax.exitCode).toBe(0);
     expect(syntax.stdout.toString()).toContain("Syntax OK");
   });

@@ -52,6 +52,7 @@ export const generateHomebrewFormula = (release: HomebrewRelease) => {
   depends_on "git"
 
   def install
+    system Formula["bun"].opt_bin/"bun", "install", "--production", "--frozen-lockfile"
     libexec.install Dir["*"]
     (bin/"usable-git").write <<~SH
       #!/bin/bash

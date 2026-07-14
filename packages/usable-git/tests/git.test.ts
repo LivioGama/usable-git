@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { discoverRepository } from "../src/git/repository.ts";
-import { createGitRunner } from "../src/git/runner.ts";
+import { createGitRunner, withGitMetrics } from "../src/git/runner.ts";
 import { parsePorcelainV2 } from "../src/git/status.ts";
 import { validateLiteralFiles } from "../src/git/paths.ts";
 import { commitFile, createRepository, writeFile } from "./helpers/repository.ts";
@@ -19,6 +19,21 @@ describe("Git primitives", () => {
       expect(result.exitCode).toBe(0);
       expect(calls[0]).toContain("--no-pager");
       expect(result.processCount).toBe(1);
+    } finally {
+      await repository.cleanup();
+    }
+  });
+
+  test("aggregates Git subprocesses across one semantic operation", async () => {
+    const repository = await createRepository();
+    try {
+      const runner = createGitRunner();
+      const measured = await withGitMetrics(async () => {
+        await runner.runChecked(repository.path, ["status", "--porcelain=v2"]);
+        await runner.runChecked(repository.path, ["rev-parse", "--git-dir"]);
+        return "done";
+      });
+      expect(measured).toEqual({ result: "done", gitSubprocessCount: 2 });
     } finally {
       await repository.cleanup();
     }

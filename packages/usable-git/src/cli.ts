@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { operationSchema } from "./contracts/v1.ts";
 import { resolve } from "node:path";
+import { runDoctor, type RunDoctorOptions } from "./doctor/index.ts";
 import { installClients, type InstallClient, type InstallClientsOptions } from "./install/index.ts";
 import { executeOperation } from "./service.ts";
 
@@ -16,6 +17,7 @@ type CliDependencies = {
   writeStdout: (value: string) => void;
   writeStderr: (value: string) => void;
   installClients: (options: InstallClientsOptions) => ReturnType<typeof installClients>;
+  runDoctor: (options: RunDoctorOptions) => ReturnType<typeof runDoctor>;
 };
 
 const defaultDependencies = (): CliDependencies => ({
@@ -23,6 +25,7 @@ const defaultDependencies = (): CliDependencies => ({
   writeStdout: (value) => process.stdout.write(value),
   writeStderr: (value) => process.stderr.write(value),
   installClients,
+  runDoctor,
 });
 
 const failUsage = (writeStderr: CliDependencies["writeStderr"], message?: string) => {
@@ -88,6 +91,31 @@ export const runCli = async (
         command: "install",
         error: {
           code: error && typeof error === "object" && "code" in error ? error.code : "install_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      })}\n`);
+      return 2;
+    }
+  }
+
+  if (command === "doctor") {
+    const clientsIndex = args.indexOf("--clients");
+    const clientsValue = clientsIndex === -1 ? undefined : args[clientsIndex + 1];
+    if (!clientsValue) return failUsage(dependencies.writeStderr, "doctor requires --clients");
+    try {
+      const report = await dependencies.runDoctor({
+        clients: selectedClients(clientsValue),
+        executablePath: dependencies.executablePath,
+      });
+      dependencies.writeStdout(`${JSON.stringify(report)}\n`);
+      return report.ok ? 0 : 2;
+    } catch (error) {
+      dependencies.writeStdout(`${JSON.stringify({
+        version: "v1",
+        ok: false,
+        command: "doctor",
+        error: {
+          code: "doctor_failed",
           message: error instanceof Error ? error.message : String(error),
         },
       })}\n`);

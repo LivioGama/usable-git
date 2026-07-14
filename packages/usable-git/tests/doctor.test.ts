@@ -156,4 +156,42 @@ describe("runDoctor", () => {
       });
       expect(report.activatedClients).toEqual([]);
     }), 15_000);
+
+  test("treats an unavailable selected client as an incomplete doctor run", async () =>
+    withTempDirectory("usable-git-doctor-skip-", async (home) => {
+      const executablePath = await executableFixture(home);
+      await writeMatchingConfigs(home, executablePath);
+
+      const report = await runDoctor({
+        clients: ["codex"],
+        executablePath,
+        home,
+        runner: matchingInstallRunner(executablePath),
+        clientInvoker: async () => ({
+          available: false,
+          invoked: false,
+          reason: "client executable not found",
+        }),
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.summary).toEqual({ passed: 7, failed: 0, skipped: 1 });
+      expect(report.activatedClients).toEqual([]);
+    }), 15_000);
+
+  test("removes the banned Anthropic API key from doctor subprocesses", async () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "must-not-leak";
+    try {
+      const result = await createDoctorProcessRunner()({
+        command: "printenv",
+        args: ["ANTHROPIC_API_KEY"],
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = original;
+    }
+  });
 });

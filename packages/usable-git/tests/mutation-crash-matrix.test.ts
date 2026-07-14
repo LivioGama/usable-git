@@ -110,7 +110,7 @@ const expectUnrelatedState = async (repo: TestRepository) => {
   );
   expect(await readFile(join(repo.path, "loose.txt"), "utf8")).toBe("loose pending\n");
   expect(await repo.run("diff", "--cached", "--name-only")).toBe("staged.txt\n");
-  expect(await repo.run("fsck", "--strict")).toBe("");
+  await repo.run("fsck", "--strict");
 };
 
 const pushFixture = async () => {

@@ -49,7 +49,16 @@ export class PublishOperationError extends UsableGitError {
 type PublishOptions = {
   stateRoot?: string;
   runner?: GitRunner;
+  mutationProbe?: (phase: PublishMutationPhase) => void | Promise<void>;
 };
+
+type PublishMutationPhase =
+  | "journal:started"
+  | "recovery:snapshotted"
+  | "journal:index_staged"
+  | "recovery:commit_started"
+  | "journal:commit_observed"
+  | "journal:terminal";
 
 type SerializedOutcome =
   | { kind: "success"; result: PublishResult }
@@ -540,6 +549,9 @@ export const publish = async (
     throw error;
   }
   if (journalState.kind === "replay") return replayOutcome(journalState.result);
+  if (journalState.kind === "started") {
+    await options.mutationProbe?.("journal:started");
+  }
 
   let lock;
   try {
@@ -557,19 +569,23 @@ export const publish = async (
   const indexPath = join(repository.gitDir, "index");
   try {
     if (journalState.kind === "resume") {
+      const recoveryState = await recoveryStore.read({
+        requestId: request.requestId,
+        repoKey,
+        inputHash,
+        preHead:
+          request.expectedHead.kind === "oid"
+            ? request.expectedHead.oid
+            : null,
+        files: request.files,
+      });
+      const canRestartBeforeMutation =
+        journalState.record.phase === "started" && recoveryState === null;
+      if (!canRestartBeforeMutation) {
       try {
         const recovered = await recoverInterruptedPublish(
           request,
-          await recoveryStore.read({
-            requestId: request.requestId,
-            repoKey,
-            inputHash,
-            preHead:
-              request.expectedHead.kind === "oid"
-                ? request.expectedHead.oid
-                : null,
-            files: request.files,
-          }),
+          recoveryState,
           repository.root,
           indexPath,
           runner,
@@ -584,6 +600,7 @@ export const publish = async (
             ? error
             : new PublishOperationError("RECOVERY_CONFLICT", String(error));
         throw await terminalError(journal, repoKey, request.requestId, publishError);
+      }
       }
     }
 
@@ -629,6 +646,7 @@ export const publish = async (
       ownedIndexChecksum: snapshot.checksum,
     };
     await recoveryStore.write(recovery);
+    await options.mutationProbe?.("recovery:snapshotted");
 
     const untracked = selectedBefore.changes
       .filter(({ path, kind }) => files.includes(path) && kind === "untracked")
@@ -677,8 +695,10 @@ export const publish = async (
     };
     await recoveryStore.write(recovery);
     await journal.transition(repoKey, request.requestId, "index_staged");
+    await options.mutationProbe?.("journal:index_staged");
     recovery = { ...recovery, phase: "commit_started" };
     await recoveryStore.write(recovery);
+    await options.mutationProbe?.("recovery:commit_started");
 
     const commit = await runner.run(repository.root, [
       "--literal-pathspecs",
@@ -697,8 +717,10 @@ export const publish = async (
         commit.exitCode === 0
           ? []
           : [`Git exited ${commit.exitCode}, but commit ${observedHead} was observed`];
+      let observedTransitioned = false;
       try {
         await journal.transition(repoKey, request.requestId, "commit_observed");
+        observedTransitioned = true;
       } catch (error) {
         observedWarnings.push(
           `Commit was observed but journal transition failed: ${error instanceof Error ? error.message : String(error)}`.slice(
@@ -706,6 +728,9 @@ export const publish = async (
             4_096,
           ),
         );
+      }
+      if (observedTransitioned) {
+        await options.mutationProbe?.("journal:commit_observed");
       }
       const result = await finishObservedCommit(
         request,
@@ -715,8 +740,10 @@ export const publish = async (
         observedWarnings,
       );
       const outcome: SerializedOutcome = { kind: "success", result };
+      let terminalWritten = false;
       try {
         await journal.complete(repoKey, request.requestId, outcome);
+        terminalWritten = true;
       } catch (error) {
         result.warnings.push(
           `Commit was observed but terminal journal write failed: ${error instanceof Error ? error.message : String(error)}`.slice(
@@ -724,6 +751,9 @@ export const publish = async (
             4_096,
           ),
         );
+      }
+      if (terminalWritten) {
+        await options.mutationProbe?.("journal:terminal");
       }
       try {
         await recoveryStore.remove(repoKey, request.requestId);

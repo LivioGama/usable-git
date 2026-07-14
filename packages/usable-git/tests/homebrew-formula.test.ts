@@ -28,6 +28,7 @@ describe("Homebrew formula generation", () => {
     expect(first).toContain('depends_on "git"');
     expect(first).toContain('system formula_opt_bin("bun")/"bun", "install", "--production", "--frozen-lockfile"');
     expect(first).toContain('libexec.install Dir["*"]');
+    expect(first).toContain('export USABLE_GIT_EXECUTABLE_PATH="$0"');
     expect(first).toContain('(bin/"usable-git").chmod 0755');
     expect(first).not.toContain("{{");
     expect(first.endsWith("\n")).toBeTrue();

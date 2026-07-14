@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { parseJsonRequest, runCli as runCliCommand } from "../src/cli.ts";
+import {
+  parseJsonRequest,
+  resolveExecutablePath,
+  runCli as runCliCommand,
+} from "../src/cli.ts";
 import {
   commitFile,
   createRepository,
@@ -32,6 +36,25 @@ const runCli = async (args: string[], input?: unknown) => {
 };
 
 describe("usable-git JSON CLI", () => {
+  test("prefers the launcher-provided stable executable path", () => {
+    expect(resolveExecutablePath(
+      { USABLE_GIT_EXECUTABLE_PATH: "/opt/homebrew/bin/usable-git" },
+      "/opt/homebrew/Cellar/usable-git/0.1.0/libexec/packages/usable-git/src/cli.ts",
+    )).toBe("/opt/homebrew/bin/usable-git");
+  });
+
+  test("falls back to the resolved source entrypoint without a launcher signal", () => {
+    expect(resolveExecutablePath({}, "packages/usable-git/src/cli.ts"))
+      .toBe(join(process.cwd(), "packages/usable-git/src/cli.ts"));
+  });
+
+  test("ignores a non-absolute launcher-provided executable path", () => {
+    expect(resolveExecutablePath(
+      { USABLE_GIT_EXECUTABLE_PATH: "bin/usable-git" },
+      "/workspace/packages/usable-git/src/cli.ts",
+    )).toBe("/workspace/packages/usable-git/src/cli.ts");
+  });
+
   test("maps explicit JSON flags to all five v1 request shapes", () => {
     const oid = "a".repeat(40);
     const fingerprint = "b".repeat(64);

@@ -65,5 +65,28 @@ export const publishRequestSchema = z
     }
   });
 
+export const publishResultSchema = z
+  .object({
+    commitOid: objectIdSchema,
+    committedPaths: z.array(literalPublishFileSchema),
+    head: z
+      .object({
+        oid: objectIdSchema,
+        branch: z.string().min(1),
+      })
+      .strict(),
+    status: z
+      .object({
+        staged: z.array(literalPublishFileSchema),
+        unstaged: z.array(literalPublishFileSchema),
+        untracked: z.array(literalPublishFileSchema),
+        conflicted: z.array(literalPublishFileSchema),
+      })
+      .strict(),
+    warnings: z.array(z.string()),
+  })
+  .strict();
+
 export type PublishRequest = z.infer<typeof publishRequestSchema>;
 export type ExpectedHead = z.infer<typeof expectedHeadSchema>;
+export type PublishResult = z.infer<typeof publishResultSchema>;

@@ -4,7 +4,9 @@ import { access } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import {
   publishRequestSchema,
+  publishResultSchema,
   type PublishRequest,
+  type PublishResult,
 } from "../contracts/v1/publish.ts";
 import type { ErrorCode } from "../contracts/v1.ts";
 import { UsableGitError } from "../errors.ts";
@@ -31,23 +33,7 @@ import {
 } from "../mutations/repository-lock.ts";
 import { inspect, type InspectResult } from "./inspect.ts";
 
-export type { PublishRequest } from "../contracts/v1/publish.ts";
-
-export type PublishResult = {
-  commitOid: string;
-  committedPaths: string[];
-  head: {
-    oid: string;
-    branch: string;
-  };
-  status: {
-    staged: string[];
-    unstaged: string[];
-    untracked: string[];
-    conflicted: string[];
-  };
-  warnings: string[];
-};
+export type { PublishRequest, PublishResult } from "../contracts/v1/publish.ts";
 
 export class PublishOperationError extends UsableGitError {
   constructor(
@@ -301,7 +287,7 @@ const terminalError = async (
 
 const replayOutcome = (value: unknown): PublishResult => {
   const outcome = value as SerializedOutcome;
-  if (outcome?.kind === "success") return outcome.result;
+  if (outcome?.kind === "success") return publishResultSchema.parse(outcome.result);
   if (outcome?.kind === "error") {
     throw new PublishOperationError(
       outcome.error.code,
@@ -452,7 +438,7 @@ const finishObservedCommit = async (
     );
   }
 
-  return {
+  return publishResultSchema.parse({
     commitOid,
     committedPaths: [...request.files],
     head: {
@@ -463,7 +449,7 @@ const finishObservedCommit = async (
       ? statusForResult(after)
       : { staged: [], unstaged: [], untracked: [], conflicted: [] },
     warnings,
-  };
+  });
 };
 
 const recoverInterruptedPublish = async (

@@ -1,6 +1,12 @@
 import { resolve } from "node:path";
 import { decodeCursor, digestValue, encodeCursor } from "../contracts/cursor.ts";
 import { reviewRequestSchema, type ReviewRequest } from "../contracts/v1.ts";
+import {
+  reviewResultSchema,
+  type ReviewItem,
+  type ReviewResult,
+  type ReviewScope,
+} from "../contracts/v1/review.ts";
 import { UsableGitError } from "../errors.ts";
 import { fingerprintChange } from "../git/fingerprint.ts";
 import { validateLiteralFiles } from "../git/paths.ts";
@@ -8,24 +14,7 @@ import { requireWorktreeRepository } from "../git/repository.ts";
 import { git } from "../git/runner.ts";
 import { parsePorcelainV2, type StatusChange } from "../git/status.ts";
 
-export type ReviewScope = "staged" | "unstaged" | "untracked";
-
-export type ReviewItem = {
-  scope: ReviewScope;
-  path: string;
-  originalPath?: string;
-  patch: string;
-  binary: boolean;
-  additions: number;
-  deletions: number;
-  truncated: boolean;
-};
-
-export type ReviewResult = {
-  items: ReviewItem[];
-  bytes: number;
-  nextCursor?: string;
-};
+export type { ReviewItem, ReviewResult, ReviewScope } from "../contracts/v1/review.ts";
 
 type Cursor = { item: number; character: number };
 
@@ -198,5 +187,7 @@ export const review = async (input: ReviewRequest): Promise<ReviewResult> => {
   ) {
     throw new UsableGitError("INVALID_INPUT", "Invalid review cursor offset");
   }
-  return paginate(items, offset as Cursor, request.byteCap, requestDigest, snapshot);
+  return reviewResultSchema.parse(
+    paginate(items, offset as Cursor, request.byteCap, requestDigest, snapshot),
+  );
 };

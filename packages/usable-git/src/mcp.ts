@@ -5,11 +5,11 @@ import {
   historyRequestSchema,
   inspectRequestSchema,
   reviewRequestSchema,
-  v1McpEnvelopeSchema,
   type V1Envelope,
 } from "./contracts/v1.ts";
 import { publishRequestSchema } from "./contracts/v1/publish.ts";
 import { pushRequestSchema } from "./contracts/v1/push.ts";
+import { operationMcpOutputSchemas } from "./contracts/v1/results.ts";
 import { executeOperation, type Operation } from "./service.ts";
 import type { TelemetryEventInput } from "./contracts/v1/telemetry.ts";
 import type { TelemetrySink } from "./telemetry/event.ts";
@@ -68,31 +68,31 @@ export const createMcpServer = (options: { telemetrySink?: TelemetrySink } = {})
   server.registerTool("inspect", {
     description: "Inspect one local repository snapshot without mutation or network access.",
     inputSchema: inspectRequestSchema.shape,
-    outputSchema: v1McpEnvelopeSchema,
+    outputSchema: operationMcpOutputSchemas.inspect,
     annotations: toolAnnotations.read,
   }, handler("inspect"));
   server.registerTool("review", {
     description: "Return staged and unstaged repository evidence with bounded pagination.",
     inputSchema: reviewRequestSchema.shape,
-    outputSchema: v1McpEnvelopeSchema,
+    outputSchema: operationMcpOutputSchemas.review,
     annotations: toolAnnotations.read,
   }, handler("review"));
   server.registerTool("history", {
     description: "Read bounded history from an existing local ref without fetching.",
     inputSchema: historyRequestSchema.shape,
-    outputSchema: v1McpEnvelopeSchema,
+    outputSchema: operationMcpOutputSchemas.history,
     annotations: toolAnnotations.read,
   }, handler("history"));
   server.registerTool("publish", {
     description: "Commit exactly the selected paths after optimistic state validation.",
     inputSchema: publishRequestSchema.shape,
-    outputSchema: v1McpEnvelopeSchema,
+    outputSchema: operationMcpOutputSchemas.publish,
     annotations: toolAnnotations.publish,
   }, handler("publish"));
   server.registerTool("push", {
     description: "Update exactly one configured remote branch with fast-forward or an exact lease.",
     inputSchema: pushRequestSchema.shape,
-    outputSchema: v1McpEnvelopeSchema,
+    outputSchema: operationMcpOutputSchemas.push,
     annotations: toolAnnotations.push,
   }, handler("push"));
   return server;

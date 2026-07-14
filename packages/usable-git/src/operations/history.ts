@@ -1,26 +1,15 @@
 import { decodeCursor, digestValue, encodeCursor } from "../contracts/cursor.ts";
 import { historyRequestSchema, type HistoryRequest } from "../contracts/v1.ts";
+import {
+  historyResultSchema,
+  type HistoryCommit,
+  type HistoryResult,
+} from "../contracts/v1/history.ts";
 import { UsableGitError } from "../errors.ts";
 import { requireWorktreeRepository } from "../git/repository.ts";
 import { git } from "../git/runner.ts";
 
-export type HistoryCommit = {
-  oid: string;
-  parents: string[];
-  author: { name: string; email: string };
-  committer: { name: string; email: string };
-  authoredAt: string;
-  committedAt: string;
-  signatureStatus: string;
-  message: string;
-};
-
-export type HistoryResult = {
-  head: { kind: "unborn" } | { kind: "oid"; oid: string };
-  commits: HistoryCommit[];
-  bytes: number;
-  nextCursor?: string;
-};
+export type { HistoryCommit, HistoryResult } from "../contracts/v1/history.ts";
 
 export const parseHistory = (output: string): HistoryCommit[] => {
   const fields = output.split("\0");
@@ -86,7 +75,7 @@ export const history = async (input: HistoryRequest): Promise<HistoryResult> => 
   const skip = typeof cursor?.offset === "number" ? cursor.offset : 0;
   const exists = await git.run(repository.root, ["rev-parse", "--verify", "--quiet", request.ref]);
   if (exists.exitCode === 1 && request.ref === "HEAD") {
-    return { head: { kind: "unborn" }, commits: [], bytes: 0 };
+    return historyResultSchema.parse({ head: { kind: "unborn" }, commits: [], bytes: 0 });
   }
   if (exists.exitCode !== 0) throw new Error(exists.stderr.trim() || `Unknown revision: ${request.ref}`);
   const snapshot = exists.stdout.trim();
@@ -119,7 +108,7 @@ export const history = async (input: HistoryRequest): Promise<HistoryResult> => 
     bytes += commitBytes;
   }
   const hasMore = hasMoreByCount || commits.length < candidates.length;
-  return {
+  return historyResultSchema.parse({
     head: { kind: "oid", oid: snapshot },
     commits,
     bytes,
@@ -133,5 +122,5 @@ export const history = async (input: HistoryRequest): Promise<HistoryResult> => 
           }),
         }
       : {}),
-  };
+  });
 };

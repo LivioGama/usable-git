@@ -114,6 +114,26 @@ export const v1McpEnvelopeSchema = z.object({
   }
 });
 
+export const createV1McpEnvelopeSchema = <TResult extends z.ZodType>(
+  operation: z.infer<typeof operationSchema>,
+  resultSchema: TResult,
+) => z.object({
+  ...envelopeBase,
+  operation: z.literal(operation),
+  ok: z.boolean(),
+  result: resultSchema.optional(),
+  error: operationErrorSchema.optional(),
+}).strict().superRefine((value, context) => {
+  const hasResult = Object.hasOwn(value, "result");
+  const hasError = Object.hasOwn(value, "error");
+  if (hasResult === hasError || value.ok !== hasResult) {
+    context.addIssue({
+      code: "custom",
+      message: "ok must agree with exactly one of result or error",
+    });
+  }
+});
+
 export type InspectRequest = z.infer<typeof inspectRequestSchema>;
 export type ReviewRequest = z.input<typeof reviewRequestSchema>;
 export type HistoryRequest = z.input<typeof historyRequestSchema>;

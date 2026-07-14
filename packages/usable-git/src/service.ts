@@ -5,6 +5,7 @@ import {
   type ErrorCode,
   type V1Envelope,
 } from "./contracts/v1.ts";
+import { parseOperationResult } from "./contracts/v1/results.ts";
 import { UsableGitError } from "./errors.ts";
 import {
   GitCommandError,
@@ -39,22 +40,29 @@ const requestId = (input: unknown) =>
     : undefined;
 
 const invoke = async (operation: Operation, input: unknown) => {
+  let result: unknown;
   switch (operation) {
     case "inspect":
-      return inspect(input as Parameters<typeof inspect>[0]);
+      result = await inspect(input as Parameters<typeof inspect>[0]);
+      break;
     case "review":
-      return review(input as Parameters<typeof review>[0]);
+      result = await review(input as Parameters<typeof review>[0]);
+      break;
     case "history":
-      return history(input as Parameters<typeof history>[0]);
+      result = await history(input as Parameters<typeof history>[0]);
+      break;
     case "publish": {
       const { publish } = await import("./operations/publish.ts");
-      return publish(input as Parameters<typeof publish>[0]);
+      result = await publish(input as Parameters<typeof publish>[0]);
+      break;
     }
     case "push": {
       const { push } = await import("./operations/push.ts");
-      return push(input as Parameters<typeof push>[0]);
+      result = await push(input as Parameters<typeof push>[0]);
+      break;
     }
   }
+  return parseOperationResult(operation, result);
 };
 
 const sanitizeDiagnostic = (message: string) =>

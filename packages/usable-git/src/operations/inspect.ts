@@ -1,4 +1,9 @@
 import { inspectRequestSchema, type InspectRequest } from "../contracts/v1.ts";
+import {
+  inspectResultSchema,
+  type InspectedChange,
+  type InspectResult,
+} from "../contracts/v1/inspect.ts";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { fingerprintChange } from "../git/fingerprint.ts";
@@ -7,24 +12,7 @@ import { requireWorktreeRepository } from "../git/repository.ts";
 import { git } from "../git/runner.ts";
 import { parsePorcelainV2, type StatusChange } from "../git/status.ts";
 
-export type InspectedChange = StatusChange & { fingerprint: string };
-
-export type InspectResult = {
-  repository: {
-    root: string;
-    gitDir: string;
-    commonDir: string;
-  };
-  branch: ReturnType<typeof parsePorcelainV2>["branch"];
-  head: { kind: "unborn" } | { kind: "oid"; oid: string };
-  stashCount: number;
-  inProgress: string[];
-  staged: string[];
-  unstaged: string[];
-  untracked: string[];
-  conflicted: string[];
-  changes: InspectedChange[];
-};
+export type { InspectedChange, InspectResult } from "../contracts/v1/inspect.ts";
 
 const exists = async (path: string) => access(path).then(() => true, () => false);
 
@@ -72,7 +60,7 @@ export const inspect = async (input: InspectRequest): Promise<InspectResult> => 
       })),
   );
 
-  return {
+  return inspectResultSchema.parse({
     repository: {
       root: repository.root,
       gitDir: repository.gitDir,
@@ -89,5 +77,5 @@ export const inspect = async (input: InspectRequest): Promise<InspectResult> => 
     untracked: changes.filter(({ kind }) => kind === "untracked").map(({ path }) => path),
     conflicted: changes.filter(({ conflicted }) => conflicted).map(({ path }) => path),
     changes,
-  };
+  });
 };
